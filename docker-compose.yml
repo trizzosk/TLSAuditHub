@@ -1,4 +1,17 @@
 services:
+  ui:
+    image: python:3.12-slim
+    container_name: tlsaudithub-ui
+    volumes:
+      - ./ui-prototype:/app
+    working_dir: /app
+    command: >
+      sh -c "python -m http.server 5173 --bind 0.0.0.0"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
   api:
     image: python:3.12-slim
     container_name: sslyze-api
@@ -6,10 +19,10 @@ services:
     - .env
     volumes:
       - ./api:/app
-      - ./app:/shared
+      - ./app:/app/shared
     working_dir: /app
     command: >
-      sh -c "pip install fastapi uvicorn psycopg2-binary sqlalchemy &&
+      sh -c "pip install fastapi uvicorn psycopg2-binary sqlalchemy celery redis python-jose passlib[bcrypt] python-multipart &&
              uvicorn main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
@@ -22,7 +35,7 @@ services:
     container_name: sslyze-worker
     volumes:
       - ./worker:/app
-      - ./app:/shared
+      - ./app:/app/shared
     working_dir: /app
     command: >
       sh -c "pip install sslyze celery redis psycopg2-binary sqlalchemy &&
@@ -36,7 +49,7 @@ services:
     container_name: sslyze-scheduler
     volumes:
       - ./worker:/app
-      - ./app:/shared
+      - ./app:/app/shared
     working_dir: /app
     command: >
       sh -c "pip install celery redis &&

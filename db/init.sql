@@ -38,3 +38,14 @@ CREATE TABLE scan_diffs (
     created_at TIMESTAMP DEFAULT now(),
     diff JSONB
 );
+
+INSERT INTO users (username, password_hash, is_active)
+VALUES (
+    'trizzo',
+    '$pbkdf2-sha256$29000$BqD0HuOcM4ZQijGGUKo1Jg$G79aYyJO4xeZXrb28Wfe28g9rTcbSJzM1/HYCF4nG64',
+    TRUE
+)
+ON CONFLICT (username)
+DO UPDATE SET
+    password_hash = EXCLUDED.password_hash,
+    is_active = TRUE;

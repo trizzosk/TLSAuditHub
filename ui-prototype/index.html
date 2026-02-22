@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TLSAuditHub UI Prototype</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>TLSAuditHub</h1>
+        <p>TLS monitoring console</p>
+      </div>
+
+      <nav class="menu">
+        <button class="menu-item active" data-view="dashboardView">Dashboard</button>
+        <button class="menu-item" data-view="targetsView">Hosts / Targets</button>
+        <button class="menu-item" data-view="jobsView">Jobs / Results</button>
+      </nav>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <h2 id="viewTitle">Dashboard</h2>
+        <div class="topbar-actions">
+          <form id="loginForm" class="auth-form">
+            <input id="authUsername" type="text" placeholder="username" required>
+            <input id="authPassword" type="password" placeholder="password" required>
+            <button id="loginBtn" type="submit">Login</button>
+          </form>
+          <button id="logoutBtn" type="button" class="ghost-btn">Logout</button>
+          <span id="authState" class="auth-state">Not authenticated</span>
+          <button id="refreshAllBtn" type="button">Refresh Data</button>
+        </div>
+      </header>
+
+      <section id="dashboardView" class="view active">
+        <div class="cards-grid">
+          <article class="metric-card">
+            <h3>Total Hosts</h3>
+            <p id="metricHostsTotal">0</p>
+          </article>
+          <article class="metric-card">
+            <h3>Enabled Hosts</h3>
+            <p id="metricHostsEnabled">0</p>
+          </article>
+          <article class="metric-card">
+            <h3>Scans Recorded</h3>
+            <p id="metricScansTotal">0</p>
+          </article>
+          <article class="metric-card">
+            <h3>Running Scans</h3>
+            <p id="metricScansRunning">0</p>
+          </article>
+          <article class="metric-card">
+            <h3>Scan Results</h3>
+            <p id="metricResultsTotal">0</p>
+          </article>
+          <article class="metric-card">
+            <h3>Diff Events</h3>
+            <p id="metricDiffsTotal">0</p>
+          </article>
+        </div>
+        <section class="card">
+          <h3>Last Scan</h3>
+          <p id="lastScanAt" class="muted">No completed scans yet.</p>
+        </section>
+      </section>
+
+      <section id="targetsView" class="view">
+        <section class="card">
+          <h3>Add Host</h3>
+          <form id="targetForm" class="inline-form">
+            <label for="hostname">Hostname</label>
+            <input id="hostname" type="text" placeholder="example.com" required>
+            <label for="port">Port</label>
+            <input id="port" type="number" min="1" max="65535" value="443" required>
+            <button type="submit">Add Target</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h3>Target Inventory</h3>
+            <button id="refreshTargetsBtn" type="button">Refresh Targets</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Hostname</th>
+                  <th>Port</th>
+                  <th>Enabled</th>
+                  <th>Scan Interval (min)</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="targetsBody">
+                <tr><td colspan="5" class="muted">No data loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="jobsView" class="view">
+        <section class="card">
+          <div class="section-header">
+            <h3>Job Runs</h3>
+            <button id="refreshJobsBtn" type="button">Refresh Jobs</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Job ID</th>
+                  <th>Host</th>
+                  <th>Status</th>
+                  <th>Started</th>
+                  <th>Finished</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="jobsBody">
+                <tr><td colspan="6" class="muted">No jobs loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Selected Job Result</h3>
+          <pre id="jobResultsPanel">Select "View Result" from a job row.</pre>
+        </section>
+      </section>
+
+      <section class="card">
+        <h3>Event Log</h3>
+        <pre id="logPanel">Ready.</pre>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -18,12 +18,15 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401)
 
     db = SessionLocal()
-    user = db.execute(
-        text("SELECT * FROM users WHERE username=:u AND is_active=true"),
-        {"u": username},
-    ).fetchone()
+    try:
+        user = db.execute(
+            text("SELECT * FROM users WHERE username=:u AND is_active=true"),
+            {"u": username},
+        ).fetchone()
 
-    if not user:
-        raise HTTPException(status_code=401)
+        if not user:
+            raise HTTPException(status_code=401)
 
-    return dict(user._mapping)
+        return dict(user._mapping)
+    finally:
+        db.close()

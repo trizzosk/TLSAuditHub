@@ -1,5 +1,5 @@
 from celery import Celery
-from sslyze import Scanner, ServerScanRequest
+from sslyze import Scanner, ServerScanRequest, ServerNetworkLocation
 from sqlalchemy import text
 from shared.database import SessionLocal
 from datetime import datetime
@@ -9,6 +9,11 @@ from normalize import normalize_scan
 
 from celery.schedules import crontab
 
+celery = Celery(
+    "worker",
+    broker="redis://redis:6379/0",
+)
+
 celery.conf.beat_schedule = {
     "scan-all-targets-every-night": {
         "task": "worker.run_scan",
@@ -17,19 +22,17 @@ celery.conf.beat_schedule = {
     }
 }
 
-celery = Celery(
-    "worker",
-    broker="redis://redis:6379/0",
-)
-
 @celery.task
 def run_scan(target_id):
     db = SessionLocal()
 
-    target = db.execute(
+    target_row = db.execute(
         text("SELECT hostname, port FROM targets WHERE id=:id"),
         {"id": target_id},
     ).fetchone()
+    if not target_row:
+        return
+    target = target_row._mapping
 
     scan_id = str(uuid.uuid4())
     db.execute(
@@ -42,11 +45,15 @@ def run_scan(target_id):
     db.commit()
 
     scanner = Scanner()
-    request = ServerScanRequest(
-        server_location=(target.hostname, target.port),
-        scan_commands={"certificate_info", "tlsv1_2_cipher_suites"},
+    server_location = ServerNetworkLocation(
+        hostname=target["hostname"],
+        port=target["port"],
     )
-    scanner.queue_scan(request)
+    request = ServerScanRequest(
+        server_location=server_location,
+        scan_commands={"certificate_info", "tls_1_2_cipher_suites"},
+    )
+    scanner.queue_scans([request])
 
     for result in scanner.get_results():
         db.execute(
@@ -82,8 +89,9 @@ def run_scan(target_id):
     ).fetchone()
 
     if prev_scan:
-        old_norm = normalize_scan(load_results(prev_scan.id))
-        new_norm = normalize_scan(load_results(scan_id))
+        prev_scan_id = prev_scan._mapping["id"]
+        old_norm = normalize_scan(load_results(db, prev_scan_id))
+        new_norm = normalize_scan(load_results(db, scan_id))
 
         diff = {}
 
@@ -114,15 +122,19 @@ def run_scan(target_id):
                 """),
                 {
                     "tid": target_id,
-                    "old": prev_scan.id,
+                    "old": prev_scan_id,
                     "new": scan_id,
                     "diff": diff,
                 },
             )
+            db.commit()
 
-def load_results(scan_id):
+def load_results(db, scan_id):
     rows = db.execute(
         text("SELECT plugin, result FROM scan_results WHERE scan_id=:id"),
         {"id": scan_id},
     ).fetchall()
-    return [{"plugin": r.plugin, "result": r.result} for r in rows]
+    return [
+        {"plugin": r._mapping["plugin"], "result": r._mapping["result"]}
+        for r in rows
+    ]

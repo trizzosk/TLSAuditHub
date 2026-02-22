@@ -9,7 +9,12 @@ def normalize_scan(scan_results: list[dict]) -> dict:
         plugin = r["plugin"]
         result = r["result"]
 
-        if plugin == "tlsv1_2_cipher_suites":
+        if plugin in {
+            "tls_1_0_cipher_suites",
+            "tls_1_1_cipher_suites",
+            "tls_1_2_cipher_suites",
+            "tls_1_3_cipher_suites",
+        }:
             normalized["cipher_suites"].update(
                 result.get("accepted_cipher_suites", [])
             )
@@ -24,7 +29,7 @@ def normalize_scan(scan_results: list[dict]) -> dict:
                 "san": cert.get("subject_alternative_name"),
             }
 
-        if plugin.startswith("tlsv"):
+        if plugin.startswith("tls_"):
             if result.get("is_protocol_supported"):
                 normalized["tls_versions"].add(plugin)
 
