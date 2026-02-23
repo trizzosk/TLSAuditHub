@@ -15,28 +15,37 @@
       </div>
 
       <nav class="menu">
-        <button class="menu-item active" data-view="dashboardView">Dashboard</button>
+        <button class="menu-item" data-view="dashboardView">Dashboard</button>
         <button class="menu-item" data-view="targetsView">Hosts / Targets</button>
-        <button class="menu-item" data-view="jobsView">Jobs / Results</button>
+        <button class="menu-item" data-view="jobsView">Jobs</button>
+        <button class="menu-item" data-view="resultsView">Results</button>
+        <button class="menu-item" data-view="adminView">Admin</button>
       </nav>
     </aside>
 
     <main class="main-panel">
       <header class="topbar">
-        <h2 id="viewTitle">Dashboard</h2>
+        <h2 id="viewTitle">Login</h2>
         <div class="topbar-actions">
-          <form id="loginForm" class="auth-form">
-            <input id="authUsername" type="text" placeholder="username" required>
-            <input id="authPassword" type="password" placeholder="password" required>
-            <button id="loginBtn" type="submit">Login</button>
-          </form>
           <button id="logoutBtn" type="button" class="ghost-btn">Logout</button>
           <span id="authState" class="auth-state">Not authenticated</span>
-          <button id="refreshAllBtn" type="button">Refresh Data</button>
         </div>
       </header>
 
-      <section id="dashboardView" class="view active">
+      <section id="authView" class="view active">
+        <section class="card auth-card">
+          <h3>Login</h3>
+          <form id="loginForm" class="auth-view-form">
+            <label for="authUsername">Username</label>
+            <input id="authUsername" type="text" placeholder="username" required>
+            <label for="authPassword">Password</label>
+            <input id="authPassword" type="password" placeholder="password" required>
+            <button id="loginBtn" type="submit">Login</button>
+          </form>
+        </section>
+      </section>
+
+      <section id="dashboardView" class="view">
         <div class="cards-grid">
           <article class="metric-card">
             <h3>Total Hosts</h3>
@@ -63,20 +72,20 @@
             <p id="metricDiffsTotal">0</p>
           </article>
         </div>
-        <section class="card">
-          <h3>Last Scan</h3>
-          <p id="lastScanAt" class="muted">No completed scans yet.</p>
-        </section>
       </section>
 
       <section id="targetsView" class="view">
         <section class="card">
           <h3>Add Host</h3>
           <form id="targetForm" class="inline-form">
-            <label for="hostname">Hostname</label>
-            <input id="hostname" type="text" placeholder="example.com" required>
-            <label for="port">Port</label>
-            <input id="port" type="number" min="1" max="65535" value="443" required>
+            <div class="form-field">
+              <label for="hostname">Hostname</label>
+              <input id="hostname" type="text" placeholder="example.com" required>
+            </div>
+            <div class="form-field">
+              <label for="port">Port</label>
+              <input id="port" type="number" min="1" max="65535" value="443" required>
+            </div>
             <button type="submit">Add Target</button>
           </form>
         </section>
@@ -129,16 +138,56 @@
             </table>
           </div>
         </section>
+      </section>
 
+      <section id="resultsView" class="view">
         <section class="card">
-          <h3>Selected Job Result</h3>
-          <pre id="jobResultsPanel">Select "View Result" from a job row.</pre>
+          <h3>Selected Job Result <span id="selectedResultScanId" class="muted"></span></h3>
+          <div id="jobResultsPanel" class="results-panel muted">Select "Results" from a job row.</div>
         </section>
       </section>
 
-      <section class="card">
-        <h3>Event Log</h3>
-        <pre id="logPanel">Ready.</pre>
+      <section id="adminView" class="view">
+        <section class="card">
+          <div class="section-header">
+            <h3>Proxy Configuration</h3>
+            <button id="reloadProxyBtn" type="button">Reload Proxy Config</button>
+          </div>
+          <form id="proxyForm" class="proxy-form">
+            <label class="checkbox-row">
+              <input id="proxyEnabled" type="checkbox">
+              <span>Enable HTTP Proxy For Scans</span>
+            </label>
+            <div class="proxy-grid">
+              <div class="form-field">
+                <label for="proxyHost">Proxy Host</label>
+                <input id="proxyHost" type="text" placeholder="proxy.company.local">
+              </div>
+              <div class="form-field">
+                <label for="proxyPort">Proxy Port</label>
+                <input id="proxyPort" type="number" min="1" max="65535" value="8080">
+              </div>
+              <div class="form-field">
+                <label for="proxyUsername">Proxy Username</label>
+                <input id="proxyUsername" type="text" placeholder="optional">
+              </div>
+              <div class="form-field">
+                <label for="proxyPassword">Proxy Password</label>
+                <input id="proxyPassword" type="password" placeholder="leave empty to keep current">
+              </div>
+            </div>
+            <div class="form-field">
+              <label for="proxyNoProxyPatterns">Do Not Use Proxy For (wildcards allowed)</label>
+              <textarea id="proxyNoProxyPatterns" rows="3" placeholder="*.domain.local, *.corp.internal, localhost"></textarea>
+            </div>
+            <button type="submit" id="saveProxyBtn">Save Proxy Config</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h3>Event Log</h3>
+          <pre id="logPanel">Ready.</pre>
+        </section>
       </section>
     </main>
   </div>

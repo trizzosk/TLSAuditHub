@@ -39,6 +39,24 @@ CREATE TABLE scan_diffs (
     diff JSONB
 );
 
+CREATE TABLE IF NOT EXISTS proxy_config (
+    id INT PRIMARY KEY DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    host TEXT NOT NULL DEFAULT '',
+    port INT NOT NULL DEFAULT 8080,
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    no_proxy_patterns TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    CONSTRAINT proxy_config_singleton CHECK (id = 1)
+);
+
+INSERT INTO proxy_config
+(id, enabled, host, port, username, password, no_proxy_patterns)
+VALUES (1, FALSE, '', 8080, '', '', '')
+ON CONFLICT (id)
+DO NOTHING;
+
 INSERT INTO users (username, password_hash, is_active)
 VALUES (
     'trizzo',

@@ -4,11 +4,21 @@ from sqlalchemy import text
 from celery import Celery
 from shared.database import SessionLocal
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from auth import verify_password, create_access_token
 from deps import get_current_user
 
 app = FastAPI(title="SSLyze Scanner API")
 celery_client = Celery("api", broker="redis://redis:6379/0")
+
+
+class ProxyConfigUpdate(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = 8080
+    username: str = ""
+    password: str = ""
+    no_proxy_patterns: str = ""
 
 app.add_middleware(
     CORSMiddleware,
@@ -17,6 +27,76 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def ensure_proxy_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS proxy_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                host TEXT NOT NULL DEFAULT '',
+                port INT NOT NULL DEFAULT 8080,
+                username TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
+                no_proxy_patterns TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT proxy_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE proxy_config
+            ADD COLUMN IF NOT EXISTS no_proxy_patterns TEXT NOT NULL DEFAULT ''
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO proxy_config
+            (id, enabled, host, port, username, password, no_proxy_patterns)
+            VALUES (1, FALSE, '', 8080, '', '', '')
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
+    db.commit()
+
+
+def read_proxy_config(db):
+    ensure_proxy_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT enabled, host, port, username, password, no_proxy_patterns
+            FROM proxy_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    data = dict(row._mapping)
+    return {
+        "enabled": bool(data["enabled"]),
+        "host": data["host"] or "",
+        "port": int(data["port"] or 8080),
+        "username": data["username"] or "",
+        "has_password": bool(data["password"]),
+        "no_proxy_patterns": data["no_proxy_patterns"] or "",
+    }
+
+
+@app.on_event("startup")
+def init_proxy_config():
+    db = SessionLocal()
+    try:
+        ensure_proxy_config_table(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")
@@ -137,6 +217,66 @@ def dashboard_summary(user=Depends(get_current_user)):
             )
         ).fetchone()
         return dict(counts._mapping)
+    finally:
+        db.close()
+
+
+@app.get("/config/proxy")
+def get_proxy_config(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        return read_proxy_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/proxy")
+def update_proxy_config(
+    payload: ProxyConfigUpdate, user=Depends(get_current_user)
+):
+    db = SessionLocal()
+    try:
+        ensure_proxy_config_table(db)
+        current = db.execute(
+            text(
+                """
+                SELECT password FROM proxy_config
+                WHERE id = 1
+                """
+            )
+        ).fetchone()
+        current_password = current._mapping["password"] if current else ""
+        new_password = (
+            payload.password
+            if payload.password not in (None, "")
+            else current_password
+        )
+
+        db.execute(
+            text(
+                """
+                UPDATE proxy_config
+                SET enabled=:enabled,
+                    host=:host,
+                    port=:port,
+                    username=:username,
+                    password=:password,
+                    no_proxy_patterns=:no_proxy_patterns,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {
+                "enabled": payload.enabled,
+                "host": payload.host.strip(),
+                "port": payload.port,
+                "username": payload.username.strip(),
+                "password": new_password,
+                "no_proxy_patterns": payload.no_proxy_patterns.strip(),
+            },
+        )
+        db.commit()
+        return read_proxy_config(db)
     finally:
         db.close()
 
