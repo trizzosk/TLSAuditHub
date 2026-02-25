@@ -24,6 +24,8 @@ const ui = {
   targetsNextBtn: document.getElementById("targetsNextBtn"),
   targetsPageInfo: document.getElementById("targetsPageInfo"),
   refreshSpoofableBtn: document.getElementById("refreshSpoofableBtn"),
+  exportSpoofableCsvBtn: document.getElementById("exportSpoofableCsvBtn"),
+  exportSpoofablePdfBtn: document.getElementById("exportSpoofablePdfBtn"),
   spoofableBody: document.getElementById("spoofableBody"),
   spoofablePageSize: document.getElementById("spoofablePageSize"),
   spoofablePrevBtn: document.getElementById("spoofablePrevBtn"),
@@ -46,7 +48,20 @@ const ui = {
   proxyPassword: document.getElementById("proxyPassword"),
   proxyNoProxyPatterns: document.getElementById("proxyNoProxyPatterns"),
   reloadProxyBtn: document.getElementById("reloadProxyBtn"),
+  schedulerForm: document.getElementById("schedulerForm"),
+  schedulerEnabled: document.getElementById("schedulerEnabled"),
+  schedulerFrequency: document.getElementById("schedulerFrequency"),
+  schedulerDayOfWeek: document.getElementById("schedulerDayOfWeek"),
+  schedulerTime: document.getElementById("schedulerTime"),
+  schedulerIntervalMinutes: document.getElementById("schedulerIntervalMinutes"),
+  schedulerDayWrap: document.getElementById("schedulerDayWrap"),
+  schedulerTimeWrap: document.getElementById("schedulerTimeWrap"),
+  schedulerIntervalWrap: document.getElementById("schedulerIntervalWrap"),
+  schedulerLastRunInfo: document.getElementById("schedulerLastRunInfo"),
+  reloadSchedulerBtn: document.getElementById("reloadSchedulerBtn"),
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
+  bulkTargetsForm: document.getElementById("bulkTargetsForm"),
+  targetsCsvFile: document.getElementById("targetsCsvFile"),
   userForm: document.getElementById("userForm"),
   userUsername: document.getElementById("userUsername"),
   userPassword: document.getElementById("userPassword"),
@@ -54,6 +69,18 @@ const ui = {
   userSurname: document.getElementById("userSurname"),
   userEmail: document.getElementById("userEmail"),
   usersBody: document.getElementById("usersBody"),
+  adminShell: document.getElementById("adminShell"),
+  adminNav: document.getElementById("adminNav"),
+  adminNavToggleBtn: document.getElementById("adminNavToggleBtn"),
+  adminPageTitle: document.getElementById("adminPageTitle"),
+  adminNavItems: document.querySelectorAll(".admin-nav-item"),
+  adminPages: document.querySelectorAll(".admin-page"),
+  refreshEventLogBtn: document.getElementById("refreshEventLogBtn"),
+  eventLogBody: document.getElementById("eventLogBody"),
+  eventLogPageSize: document.getElementById("eventLogPageSize"),
+  eventLogPrevBtn: document.getElementById("eventLogPrevBtn"),
+  eventLogNextBtn: document.getElementById("eventLogNextBtn"),
+  eventLogPageInfo: document.getElementById("eventLogPageInfo"),
   logPanel: document.getElementById("logPanel"),
 };
 
@@ -67,16 +94,36 @@ const pagination = {
   targets: { page: 1, pageSize: 15, total: 0 },
   jobs: { page: 1, pageSize: 15, total: 0 },
   spoofable: { page: 1, pageSize: 15, total: 0 },
+  eventLogs: { page: 1, pageSize: 25, total: 0 },
 };
+let activeAdminPage = "adminUsersPage";
 
 function baseUrl() {
   return "http://localhost:8000";
 }
 
-function log(message) {
+function persistEventLog(message, level = "info", source = "ui") {
+  if (!accessToken) {
+    return;
+  }
+  apiRequest("/admin/event-logs", {
+    method: "POST",
+    body: JSON.stringify({ message, level, source }),
+  }).catch(() => {
+    // Avoid recursive logging if persistence fails.
+  });
+}
+
+function log(message, options = {}) {
+  const persist = options.persist !== false;
+  const level = options.level || "info";
+  const source = options.source || "ui";
   const now = new Date().toLocaleTimeString();
   ui.logPanel.textContent += `\n[${now}] ${message}`;
   ui.logPanel.scrollTop = ui.logPanel.scrollHeight;
+  if (persist) {
+    persistEventLog(message, level, source);
+  }
 }
 
 function setAuthState(authenticated, label = "") {
@@ -136,7 +183,10 @@ function setToken(token, username = "") {
 
 async function apiRequest(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (!headers.has("Content-Type") && options.body) {
+  const hasBody = Boolean(options.body);
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (!headers.has("Content-Type") && hasBody && !isFormData) {
     headers.set("Content-Type", "application/json");
   }
   if (accessToken) {
@@ -214,6 +264,52 @@ function activateView(viewId) {
   });
 
   ui.viewTitle.textContent = viewNames[viewId] || "Dashboard";
+
+  if (viewId === "adminView") {
+    activateAdminPage(activeAdminPage);
+  }
+}
+
+function activateAdminPage(pageId) {
+  if (!ui.adminPages?.length) {
+    return;
+  }
+
+  let resolvedPageId = pageId;
+  const pageExists = Array.from(ui.adminPages).some(
+    (page) => page.id === resolvedPageId
+  );
+  if (!pageExists) {
+    resolvedPageId = "adminUsersPage";
+  }
+  activeAdminPage = resolvedPageId;
+
+  ui.adminPages.forEach((page) => {
+    page.classList.toggle("active", page.id === resolvedPageId);
+  });
+  ui.adminNavItems.forEach((item) => {
+    item.classList.toggle(
+      "active",
+      item.dataset.adminPage === resolvedPageId
+    );
+  });
+
+  const activeNav = Array.from(ui.adminNavItems).find(
+    (item) => item.dataset.adminPage === resolvedPageId
+  );
+  if (ui.adminPageTitle) {
+    ui.adminPageTitle.textContent = activeNav
+      ? activeNav.textContent.trim()
+      : "Admin";
+  }
+
+  if (ui.adminShell && window.matchMedia("(max-width: 980px)").matches) {
+    ui.adminShell.classList.add("admin-nav-collapsed");
+  }
+
+  if (resolvedPageId === "adminLogPage") {
+    refreshEventLogs();
+  }
 }
 
 function fmtDate(value) {
@@ -264,6 +360,44 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeCsv(value) {
+  const str = String(value ?? "");
+  if (
+    str.includes(",") ||
+    str.includes('"') ||
+    str.includes("\n") ||
+    str.includes("\r")
+  ) {
+    return `"${str.replaceAll('"', '""')}"`;
+  }
+  return str;
+}
+
+function downloadTextFile(content, filename, mimeType) {
+  const blob = new Blob([content], {
+    type: mimeType || "text/plain;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportTimestamp() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  return `${y}${m}${d}_${hh}${mm}${ss}`;
 }
 
 function fmtBool(value) {
@@ -342,6 +476,19 @@ function classifyCipherSuite(name) {
   return "warn";
 }
 
+function classifyHttpStatusCode(code) {
+  if (typeof code !== "number") {
+    return "warn";
+  }
+  if (code === 200 || (code >= 300 && code < 400)) {
+    return "good";
+  }
+  if (code === 401 || code === 403) {
+    return "warn";
+  }
+  return "bad";
+}
+
 function normalizeResult(result) {
   let value = result;
   for (let i = 0; i < 4; i += 1) {
@@ -373,6 +520,46 @@ function normalizePluginName(plugin) {
   return normalized;
 }
 
+const RESULT_SECTION_LABELS = {
+  certificate_info: "Certificate Information",
+  http_headers: "HTTP Security Headers",
+  heartbleed: "Heartbleed",
+  robot: "ROBOT",
+  session_renegotiation: "Session Renegotiation",
+  tls_compression: "TLS Compression",
+  tls_fallback_scsv: "TLS Fallback SCSV",
+  ssl_2_0_cipher_suites: "SSL 2.0 Cipher Suites",
+  ssl_3_0_cipher_suites: "SSL 3.0 Cipher Suites",
+  tls_1_0_cipher_suites: "TLS 1.0 Cipher Suites",
+  tls_1_1_cipher_suites: "TLS 1.1 Cipher Suites",
+  tls_1_2_cipher_suites: "TLS 1.2 Cipher Suites",
+  tls_1_3_cipher_suites: "TLS 1.3 Cipher Suites",
+};
+
+function humanizeResultSectionName(plugin) {
+  if (RESULT_SECTION_LABELS[plugin]) {
+    return RESULT_SECTION_LABELS[plugin];
+  }
+
+  return plugin
+    .split("_")
+    .map((part) => {
+      const lower = String(part || "").toLowerCase();
+      if (!lower) {
+        return "";
+      }
+      if (lower === "tls" || lower === "ssl" || lower === "http" || lower === "hsts") {
+        return lower.toUpperCase();
+      }
+      if (/^\d+$/.test(lower)) {
+        return lower;
+      }
+      return `${lower[0].toUpperCase()}${lower.slice(1)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 const PROTOCOL_PLUGINS = [
   "ssl_2_0_cipher_suites",
   "ssl_3_0_cipher_suites",
@@ -391,11 +578,18 @@ const PROTOCOL_LABELS = {
   tls_1_3_cipher_suites: "TLS 1.3",
 };
 
+const LEGACY_VULNERABLE_PROTOCOLS = new Set([
+  "ssl_2_0_cipher_suites",
+  "ssl_3_0_cipher_suites",
+  "tls_1_0_cipher_suites",
+  "tls_1_1_cipher_suites",
+]);
+
 function protocolSeverity(plugin, supported) {
   if (supported === null || supported === undefined) {
     return "warn";
   }
-  if (plugin.startsWith("ssl_")) {
+  if (LEGACY_VULNERABLE_PROTOCOLS.has(plugin)) {
     return supported ? "bad" : "good";
   }
   if (plugin === "tls_1_3_cipher_suites") {
@@ -468,18 +662,25 @@ function renderCipherSuites(result, plugin) {
   const accepted = Array.isArray(result?.accepted_cipher_suites)
     ? result.accepted_cipher_suites
     : [];
+  const isSupported = result?.is_protocol_supported;
+  const acceptedSeverity =
+    accepted.length === 0
+      ? "good"
+      : LEGACY_VULNERABLE_PROTOCOLS.has(plugin)
+        ? "bad"
+        : "warn";
   return `
     <dl class="result-grid">
       <dt>Plugin</dt><dd>${sevBadge(plugin, "warn")}</dd>
-      <dt>Protocol Supported</dt><dd>${sevBadge(fmtBool(result?.is_protocol_supported), result?.is_protocol_supported ? "good" : "bad")}</dd>
-      <dt>Accepted Suites</dt><dd>${sevBadge(accepted.length, accepted.length > 0 ? "good" : "bad")}</dd>
+      <dt>Protocol Supported</dt><dd>${sevBadge(fmtBool(isSupported), protocolSeverity(plugin, isSupported))}</dd>
+      <dt>Accepted Suites</dt><dd>${sevBadge(accepted.length, acceptedSeverity)}</dd>
     </dl>
     ${
       accepted.length
         ? `<ul class="result-list">${accepted
             .map((suite) => `<li class="tiny-mono result-item-${classifyCipherSuite(suite)}">${escapeHtml(suite)}</li>`)
             .join("")}</ul>`
-        : "<p class='muted'>No accepted cipher suites.</p>"
+        : `<p>${sevBadge("No accepted cipher suites.", "good")}</p>`
     }
   `;
 }
@@ -490,8 +691,15 @@ function renderHttpHeaders(result) {
   const maxAge = hsts?.max_age;
   const maxAgeSev =
     typeof maxAge !== "number" ? "bad" : maxAge >= 15552000 ? "good" : "warn";
+  const statusCode = Number.isInteger(result?.http_status_code)
+    ? result.http_status_code
+    : null;
   return `
     <dl class="result-grid">
+      <dt>HTTP Status Code</dt><dd>${sevBadge(
+        statusCode ?? "-",
+        classifyHttpStatusCode(statusCode)
+      )}</dd>
       <dt>Redirect Path</dt><dd class="tiny-mono">${sevBadge(result?.http_path_redirected_to || "-", "warn")}</dd>
       <dt>HSTS Present</dt><dd>${sevBadge(fmtBool(hstsPresent), hstsPresent ? "good" : "bad")}</dd>
       <dt>HSTS max-age</dt><dd>${sevBadge(hsts ? `${hsts.max_age ?? "-"} seconds` : "-", maxAgeSev)}</dd>
@@ -533,6 +741,7 @@ function renderJobResults(results) {
     protocolCard,
     ...results.map((row) => {
       const plugin = normalizePluginName(row.plugin);
+      const sectionTitle = humanizeResultSectionName(plugin);
       const result = normalizeResult(row.result);
 
       let body = "";
@@ -605,7 +814,7 @@ function renderJobResults(results) {
 
       return `
         <article class="result-card">
-          <h4>${escapeHtml(plugin)}</h4>
+          <h4>${escapeHtml(sectionTitle)}</h4>
           ${body}
         </article>
       `;
@@ -681,6 +890,11 @@ function renderDnsData(targetLabel, payload) {
   const dmarc = data.dmarc || {};
   const spfPresent = Boolean(data.spf);
   const dmarcPresent = Boolean(dmarc.record);
+  const dmarcPolicyRaw = String(dmarc.policy || "").trim();
+  const dmarcPolicyMissing = !dmarcPolicyRaw;
+  const dmarcPolicyNone = dmarcPolicyRaw.toLowerCase() === "none";
+  const dmarcPolicySeverity =
+    dmarcPolicyMissing || dmarcPolicyNone ? "bad" : "good";
 
   return `
     <article class="result-card">
@@ -690,7 +904,7 @@ function renderDnsData(targetLabel, payload) {
         <dt>Updated</dt><dd>${sevBadge(fmtDate(payload.updated_at), payload.updated_at ? "good" : "warn")}</dd>
         <dt>SPF Record</dt><dd>${sevBadge(spfPresent ? "Yes" : "No", spfPresent ? "good" : "warn")}</dd>
         <dt>DMARC Record</dt><dd>${sevBadge(dmarcPresent ? "Yes" : "No", dmarcPresent ? "good" : "warn")}</dd>
-        <dt>DMARC Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarc.policy ? "good" : "warn")}</dd>
+        <dt>DMARC Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarcPolicySeverity)}</dd>
       </dl>
     </article>
     <article class="result-card">
@@ -715,7 +929,7 @@ function renderDnsData(targetLabel, payload) {
       <h4>DMARC Record</h4>
       <dl class="result-grid">
         <dt>Lookup Domain</dt><dd class="tiny-mono">${sevBadge(dmarc.domain || "-", "warn")}</dd>
-        <dt>Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarc.policy ? "good" : "warn")}</dd>
+        <dt>Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarcPolicySeverity)}</dd>
       </dl>
       ${dmarcPresent ? `<pre>${escapeHtml(dmarc.record)}</pre>` : "<p class='muted'>No DMARC record found.</p>"}
     </article>
@@ -840,6 +1054,121 @@ function renderSpoofableList(items) {
       `;
     })
     .join("");
+}
+
+async function loadAllSpoofableItems() {
+  const data = await apiRequest("/dns/spoofable?limit=0&offset=0", {
+    method: "GET",
+  });
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+async function exportSpoofableCsv() {
+  try {
+    const items = await loadAllSpoofableItems();
+    if (!items.length) {
+      log("Spoofable CSV export skipped: no data available.");
+      return;
+    }
+
+    const header = ["Target / Host", "SPF Record", "DMARC Policy", "Result"];
+    const lines = [header.map(escapeCsv).join(",")];
+    items.forEach((row) => {
+      const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+      lines.push(
+        [
+          row.hostname || "-",
+          row.spf || "-",
+          row.dmarc_policy || "-",
+          result.label,
+        ]
+          .map(escapeCsv)
+          .join(",")
+      );
+    });
+
+    const filename = `spoofable_report_${exportTimestamp()}.csv`;
+    downloadTextFile(lines.join("\n"), filename, "text/csv;charset=utf-8");
+    log(`Spoofable CSV exported (${items.length} rows).`);
+  } catch (error) {
+    log(`Spoofable CSV export failed: ${error.message}`);
+  }
+}
+
+async function exportSpoofablePdf() {
+  try {
+    const items = await loadAllSpoofableItems();
+    if (!items.length) {
+      log("Spoofable PDF export skipped: no data available.");
+      return;
+    }
+
+    const tableRows = items
+      .map((row) => {
+        const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+        return `
+          <tr>
+            <td>${escapeHtml(row.hostname || "-")}</td>
+            <td>${escapeHtml(row.spf || "-")}</td>
+            <td>${escapeHtml(row.dmarc_policy || "-")}</td>
+            <td>${escapeHtml(result.label)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Spoofable Report</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    @media print {
+      @page { size: A4 landscape; margin: 10mm; }
+      html, body { width: 297mm; height: 210mm; }
+    }
+    body { font-family: Arial, sans-serif; margin: 0; color: #111; }
+    h1 { margin: 0 0 6px; font-size: 18px; }
+    .meta { margin: 0 0 12px; font-size: 12px; color: #333; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #999; padding: 6px; text-align: left; font-size: 10px; vertical-align: top; word-break: break-word; }
+    th { background: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <h1>Spoofable Domains Report</h1>
+  <p class="meta">Generated: ${escapeHtml(new Date().toLocaleString())} | Rows: ${items.length}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Target / Host</th>
+        <th>SPF Record</th>
+        <th>DMARC Policy</th>
+        <th>Result</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`;
+
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      log("Spoofable PDF export failed: popup blocked by browser.");
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+    }, 250);
+    log(`Spoofable PDF prepared (${items.length} rows).`);
+  } catch (error) {
+    log(`Spoofable PDF export failed: ${error.message}`);
+  }
 }
 
 async function refreshSpoofable() {
@@ -1037,26 +1366,195 @@ async function saveProxyConfig(event) {
   }
 }
 
+function applySchedulerFrequencyVisibility(frequency) {
+  const value = String(frequency || "daily").toLowerCase();
+  const isInterval = value === "interval";
+  const isWeekly = value === "weekly";
+  const isHourly = value === "hourly";
+
+  ui.schedulerIntervalWrap.classList.toggle("hidden", !isInterval);
+  ui.schedulerDayWrap.classList.toggle("hidden", !isWeekly);
+  ui.schedulerTimeWrap.classList.toggle("hidden", isInterval || isHourly);
+}
+
+function splitTimeParts(value) {
+  const text = String(value || "").trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text);
+  if (!match) {
+    return { hour: 2, minute: 0 };
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return {
+    hour: Number.isFinite(hour) ? hour : 2,
+    minute: Number.isFinite(minute) ? minute : 0,
+  };
+}
+
+function toTimeValue(hour, minute) {
+  const h = clamp(Number(hour) || 0, 0, 23);
+  const m = clamp(Number(minute) || 0, 0, 59);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+async function loadSchedulerConfig() {
+  try {
+    const data = await apiRequest("/config/scheduler", { method: "GET" });
+    const frequency = String(data.frequency || "daily").toLowerCase();
+    ui.schedulerEnabled.checked = Boolean(data.enabled);
+    ui.schedulerFrequency.value = frequency;
+    ui.schedulerDayOfWeek.value = String(data.day_of_week ?? 1);
+    ui.schedulerTime.value = toTimeValue(data.hour ?? 2, data.minute ?? 0);
+    ui.schedulerIntervalMinutes.value = String(data.interval_minutes ?? 1440);
+    ui.schedulerLastRunInfo.textContent = `Last run: ${fmtDate(
+      data.last_run_at
+    )}`;
+    applySchedulerFrequencyVisibility(frequency);
+    log("Scheduler configuration loaded.");
+  } catch (error) {
+    log(`Scheduler configuration load failed: ${error.message}`);
+  }
+}
+
+async function saveSchedulerConfig(event) {
+  event.preventDefault();
+  const frequency = String(ui.schedulerFrequency.value || "daily").toLowerCase();
+  const dayOfWeek = Number(ui.schedulerDayOfWeek.value);
+  const intervalMinutes = Number(ui.schedulerIntervalMinutes.value);
+  const { hour, minute } = splitTimeParts(ui.schedulerTime.value);
+
+  if (frequency === "interval") {
+    if (
+      !Number.isFinite(intervalMinutes) ||
+      intervalMinutes < 1 ||
+      intervalMinutes > 10080
+    ) {
+      log("Scheduler save failed: interval must be 1 to 10080 minutes.");
+      return;
+    }
+  }
+
+  if (frequency === "weekly" && (!Number.isFinite(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6)) {
+    log("Scheduler save failed: day of week must be 0-6.");
+    return;
+  }
+
+  if (frequency !== "interval") {
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) {
+      log("Scheduler save failed: hour must be 0-23.");
+      return;
+    }
+    if (!Number.isFinite(minute) || minute < 0 || minute > 59) {
+      log("Scheduler save failed: minute must be 0-59.");
+      return;
+    }
+  }
+
+  try {
+    const data = await apiRequest("/config/scheduler", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: Boolean(ui.schedulerEnabled.checked),
+        frequency,
+        day_of_week: Number.isFinite(dayOfWeek) ? dayOfWeek : 1,
+        hour: Number.isFinite(hour) ? hour : 2,
+        minute: Number.isFinite(minute) ? minute : 0,
+        interval_minutes: Number.isFinite(intervalMinutes)
+          ? intervalMinutes
+          : 1440,
+      }),
+    });
+    ui.schedulerLastRunInfo.textContent = `Last run: ${fmtDate(
+      data.last_run_at
+    )}`;
+    applySchedulerFrequencyVisibility(frequency);
+    log(
+      `Scheduler configuration saved (${data.enabled ? "enabled" : "disabled"}, ${data.frequency}).`
+    );
+  } catch (error) {
+    log(`Scheduler save failed: ${error.message}`);
+  }
+}
+
 function renderUsers(users) {
   if (!Array.isArray(users) || users.length === 0) {
     ui.usersBody.innerHTML =
-      "<tr><td colspan='5' class='muted'>No users found</td></tr>";
+      "<tr><td colspan='6' class='muted'>No users found</td></tr>";
     return;
   }
 
   ui.usersBody.innerHTML = users
-    .map(
-      (row) => `
+    .map((row) => {
+      const username = String(row.username || "");
+      const canDelete = Boolean(username) && username !== currentUsername;
+      return `
       <tr>
-        <td>${escapeHtml(row.username || "")}</td>
+        <td>${escapeHtml(username)}</td>
         <td>${escapeHtml(row.name || "")}</td>
         <td>${escapeHtml(row.surname || "")}</td>
         <td>${escapeHtml(row.email || "")}</td>
         <td>${row.is_active ? "Active" : "Disabled"}</td>
+        <td class="users-actions">
+          ${
+            canDelete
+              ? `<button type="button" class="delete-user-btn" data-user-id="${escapeHtml(
+                  row.id || ""
+                )}" data-username="${escapeHtml(username)}">Delete</button>`
+              : "<span class='muted'>Current user</span>"
+          }
+        </td>
+      </tr>
+    `
+    })
+    .join("");
+}
+
+function renderEventLogs(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    ui.eventLogBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>No event history found</td></tr>";
+    return;
+  }
+
+  ui.eventLogBody.innerHTML = rows
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(fmtDate(row.created_at))}</td>
+        <td>${escapeHtml(row.username || "-")}</td>
+        <td>${escapeHtml(row.source || "-")}</td>
+        <td>${escapeHtml(row.level || "-")}</td>
+        <td>${escapeHtml(row.message || "")}</td>
       </tr>
     `
     )
     .join("");
+}
+
+async function refreshEventLogs() {
+  try {
+    pagination.eventLogs.pageSize = getPageSize(ui.eventLogPageSize, 25);
+    const limit = pagination.eventLogs.pageSize;
+    const offset =
+      limit > 0 ? (pagination.eventLogs.page - 1) * limit : 0;
+    const query = new URLSearchParams();
+    query.set("limit", String(limit));
+    query.set("offset", String(offset));
+    const data = await apiRequest(`/admin/event-logs?${query.toString()}`, {
+      method: "GET",
+    });
+    pagination.eventLogs.total = data.total ?? 0;
+    updatePaginationUI("eventLogs", {
+      prevBtn: ui.eventLogPrevBtn,
+      nextBtn: ui.eventLogNextBtn,
+      pageInfo: ui.eventLogPageInfo,
+    });
+    renderEventLogs(data.items || []);
+  } catch (error) {
+    ui.eventLogBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>Failed to load event history</td></tr>";
+    log(`Event history load failed: ${error.message}`, { persist: false });
+  }
 }
 
 async function refreshUsers() {
@@ -1100,6 +1598,64 @@ async function createUser(event) {
   }
 }
 
+async function deleteUser(userId, username) {
+  if (!userId) {
+    return;
+  }
+  const label = username || userId;
+  if (!window.confirm(`Delete user '${label}'?`)) {
+    return;
+  }
+
+  try {
+    await apiRequest(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    });
+    log(`User deleted: ${label}`);
+    await refreshUsers();
+  } catch (error) {
+    log(`Delete user failed: ${error.message}`);
+  }
+}
+
+async function importTargetsCsv(event) {
+  event.preventDefault();
+  const file = ui.targetsCsvFile?.files?.[0];
+  if (!file) {
+    log("CSV import failed: select a CSV file first.");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file, file.name || "targets.csv");
+
+  try {
+    const data = await apiRequest("/admin/targets/import-csv", {
+      method: "POST",
+      body: formData,
+    });
+    log(
+      `CSV import done: added ${data.added ?? 0}; already in DB ${data.already_in_db ?? 0}; duplicates in file ${data.duplicates_in_file ?? 0}; invalid rows ${data.invalid_rows_count ?? 0}.`
+    );
+    if ((data.invalid_rows_count ?? 0) > 0) {
+      const preview = Array.isArray(data.invalid_rows)
+        ? data.invalid_rows
+            .slice(0, 3)
+            .map((r) => `line ${r.line}: ${r.reason}`)
+            .join(" | ")
+        : "";
+      if (preview) {
+        log(`CSV invalid row examples: ${preview}`);
+      }
+    }
+    ui.bulkTargetsForm.reset();
+    await refreshTargets();
+    await loadDashboard();
+  } catch (error) {
+    log(`CSV import failed: ${error.message}`);
+  }
+}
+
 async function addTarget(event) {
   event.preventDefault();
   const hostname = ui.hostname.value.trim();
@@ -1135,6 +1691,8 @@ async function refreshAll() {
 ui.targetForm.addEventListener("submit", addTarget);
 ui.refreshTargetsBtn.addEventListener("click", refreshTargets);
 ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
+ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
+ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
 ui.purgeJobsBtn.addEventListener("click", purgeJobs);
 ui.loginForm.addEventListener("submit", login);
@@ -1143,6 +1701,23 @@ ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
 ui.userForm.addEventListener("submit", createUser);
 ui.refreshUsersBtn.addEventListener("click", refreshUsers);
+ui.bulkTargetsForm.addEventListener("submit", importTargetsCsv);
+ui.refreshEventLogBtn.addEventListener("click", refreshEventLogs);
+ui.adminNavItems.forEach((item) => {
+  item.addEventListener("click", () => {
+    activateAdminPage(item.dataset.adminPage || "adminUsersPage");
+  });
+});
+ui.adminNavToggleBtn.addEventListener("click", () => {
+  ui.adminShell.classList.toggle("admin-nav-collapsed");
+});
+ui.usersBody.addEventListener("click", (event) => {
+  const deleteBtn = event.target.closest(".delete-user-btn");
+  if (!deleteBtn) {
+    return;
+  }
+  deleteUser(deleteBtn.dataset.userId, deleteBtn.dataset.username);
+});
 
 ui.targetsPageSize.addEventListener("change", () => {
   pagination.targets.page = 1;
@@ -1155,6 +1730,10 @@ ui.jobsPageSize.addEventListener("change", () => {
 ui.spoofablePageSize.addEventListener("change", () => {
   pagination.spoofable.page = 1;
   refreshSpoofable();
+});
+ui.eventLogPageSize.addEventListener("change", () => {
+  pagination.eventLogs.page = 1;
+  refreshEventLogs();
 });
 
 ui.targetsPrevBtn.addEventListener("click", () => {
@@ -1180,6 +1759,14 @@ ui.spoofablePrevBtn.addEventListener("click", () => {
 ui.spoofableNextBtn.addEventListener("click", () => {
   pagination.spoofable.page += 1;
   refreshSpoofable();
+});
+ui.eventLogPrevBtn.addEventListener("click", () => {
+  pagination.eventLogs.page = Math.max(1, pagination.eventLogs.page - 1);
+  refreshEventLogs();
+});
+ui.eventLogNextBtn.addEventListener("click", () => {
+  pagination.eventLogs.page += 1;
+  refreshEventLogs();
 });
 
 ui.menuItems.forEach((item) => {

@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from celery import Celery
@@ -7,6 +7,8 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from auth import verify_password, create_access_token, hash_password
 from deps import get_current_user
+import csv
+from io import StringIO
 
 app = FastAPI(title="SSLyze Scanner API")
 celery_client = Celery("api", broker="redis://redis:6379/0")
@@ -21,6 +23,15 @@ class ProxyConfigUpdate(BaseModel):
     no_proxy_patterns: str = ""
 
 
+class SchedulerConfigUpdate(BaseModel):
+    enabled: bool = True
+    frequency: str = "daily"
+    day_of_week: int = 1
+    hour: int = 2
+    minute: int = 0
+    interval_minutes: int = 1440
+
+
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -28,6 +39,13 @@ class UserCreate(BaseModel):
     surname: str = ""
     email: str = ""
     is_active: bool = True
+
+
+class EventLogCreate(BaseModel):
+    message: str
+    source: str = "ui"
+    level: str = "info"
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -77,6 +95,47 @@ def ensure_proxy_config_table(db):
     db.commit()
 
 
+def ensure_scheduler_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                frequency TEXT NOT NULL DEFAULT 'daily',
+                day_of_week INT NOT NULL DEFAULT 1,
+                hour INT NOT NULL DEFAULT 2,
+                minute INT NOT NULL DEFAULT 0,
+                interval_minutes INT NOT NULL DEFAULT 1440,
+                last_run_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT scheduler_config_singleton CHECK (id = 1),
+                CONSTRAINT scheduler_frequency_valid CHECK (
+                    frequency IN ('hourly', 'daily', 'weekly', 'interval')
+                ),
+                CONSTRAINT scheduler_day_valid CHECK (day_of_week BETWEEN 0 AND 6),
+                CONSTRAINT scheduler_hour_valid CHECK (hour BETWEEN 0 AND 23),
+                CONSTRAINT scheduler_minute_valid CHECK (minute BETWEEN 0 AND 59),
+                CONSTRAINT scheduler_interval_valid CHECK (
+                    interval_minutes BETWEEN 1 AND 10080
+                )
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO scheduler_config
+            (id, enabled, frequency, day_of_week, hour, minute, interval_minutes)
+            VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
+    db.commit()
+
+
 def ensure_users_table(db):
     db.execute(
         text(
@@ -105,6 +164,135 @@ def ensure_target_dns_table(db):
     db.commit()
 
 
+def ensure_event_logs_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                username TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'ui',
+                level TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL
+            )
+            """
+        )
+    )
+    db.commit()
+
+
+def _looks_like_csv_header(columns: list[str]) -> bool:
+    if not columns:
+        return False
+    first = (columns[0] or "").strip().lower()
+    second = (columns[1] or "").strip().lower() if len(columns) > 1 else ""
+
+    header_words = {"hostname", "host", "target", "fqdn"}
+    if first in header_words:
+        return True
+    if first.startswith("host"):
+        return True
+    if second == "port":
+        return True
+    return False
+
+
+def _parse_targets_csv(csv_bytes: bytes) -> dict:
+    try:
+        raw_text = csv_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV must be UTF-8 encoded.",
+        )
+
+    reader = csv.reader(StringIO(raw_text))
+    parsed_rows = 0
+    file_duplicates = 0
+    candidates = []
+    invalid_rows = []
+    seen = set()
+
+    for line_number, row in enumerate(reader, start=1):
+        if not row or all(not str(col).strip() for col in row):
+            continue
+
+        parsed_rows += 1
+        columns = [str(col).strip() for col in row]
+        if parsed_rows == 1 and _looks_like_csv_header(columns):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "CSV must not contain a header row. "
+                    "Remove the first line (for example: hostname,port)."
+                ),
+            )
+
+        if len(columns) > 2:
+            invalid_rows.append(
+                {
+                    "line": line_number,
+                    "reason": "Too many columns; expected hostname[,port].",
+                }
+            )
+            continue
+
+        hostname = columns[0].strip()
+        if not hostname:
+            invalid_rows.append(
+                {
+                    "line": line_number,
+                    "reason": "Hostname is empty.",
+                }
+            )
+            continue
+
+        if any(ch.isspace() for ch in hostname):
+            invalid_rows.append(
+                {
+                    "line": line_number,
+                    "reason": "Hostname contains whitespace.",
+                }
+            )
+            continue
+
+        port = 443
+        if len(columns) > 1 and columns[1] != "":
+            try:
+                port = int(columns[1])
+            except ValueError:
+                invalid_rows.append(
+                    {
+                        "line": line_number,
+                        "reason": "Port is not a valid integer.",
+                    }
+                )
+                continue
+            if port < 1 or port > 65535:
+                invalid_rows.append(
+                    {
+                        "line": line_number,
+                        "reason": "Port must be between 1 and 65535.",
+                    }
+                )
+                continue
+
+        key = (hostname.lower(), port)
+        if key in seen:
+            file_duplicates += 1
+            continue
+        seen.add(key)
+        candidates.append({"hostname": hostname, "port": port})
+
+    return {
+        "parsed_rows": parsed_rows,
+        "candidates": candidates,
+        "file_duplicates": file_duplicates,
+        "invalid_rows": invalid_rows,
+    }
+
+
 def read_proxy_config(db):
     ensure_proxy_config_table(db)
     row = db.execute(
@@ -127,13 +315,47 @@ def read_proxy_config(db):
     }
 
 
+def read_scheduler_config(db):
+    ensure_scheduler_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT
+              enabled,
+              frequency,
+              day_of_week,
+              hour,
+              minute,
+              interval_minutes,
+              last_run_at,
+              updated_at
+            FROM scheduler_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    data = dict(row._mapping)
+    return {
+        "enabled": bool(data["enabled"]),
+        "frequency": data["frequency"] or "daily",
+        "day_of_week": int(data["day_of_week"] or 1),
+        "hour": int(data["hour"] or 2),
+        "minute": int(data["minute"] or 0),
+        "interval_minutes": int(data["interval_minutes"] or 1440),
+        "last_run_at": data.get("last_run_at"),
+        "updated_at": data.get("updated_at"),
+    }
+
+
 @app.on_event("startup")
 def init_proxy_config():
     db = SessionLocal()
     try:
         ensure_proxy_config_table(db)
+        ensure_scheduler_config_table(db)
         ensure_target_dns_table(db)
         ensure_users_table(db)
+        ensure_event_logs_table(db)
     finally:
         db.close()
 
@@ -360,6 +582,66 @@ def list_users(user=Depends(get_current_user)):
         db.close()
 
 
+@app.get("/admin/event-logs")
+def list_event_logs(
+    limit: int = 100, offset: int = 0, user=Depends(get_current_user)
+):
+    db = SessionLocal()
+    try:
+        ensure_event_logs_table(db)
+        safe_limit = max(1, min(int(limit or 100), 500))
+        safe_offset = max(0, int(offset or 0))
+
+        total_row = db.execute(
+            text("SELECT COUNT(*) AS total FROM event_logs")
+        ).fetchone()
+        total = int(total_row._mapping["total"]) if total_row else 0
+
+        rows = db.execute(
+            text(
+                """
+                SELECT id, created_at, username, source, level, message
+                FROM event_logs
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :offset
+                """
+            ),
+            {"limit": safe_limit, "offset": safe_offset},
+        ).fetchall()
+        return {"items": [dict(r._mapping) for r in rows], "total": total}
+    finally:
+        db.close()
+
+
+@app.post("/admin/event-logs")
+def create_event_log(payload: EventLogCreate, user=Depends(get_current_user)):
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    db = SessionLocal()
+    try:
+        ensure_event_logs_table(db)
+        db.execute(
+            text(
+                """
+                INSERT INTO event_logs (username, source, level, message)
+                VALUES (:u, :s, :l, :m)
+                """
+            ),
+            {
+                "u": str(user.get("username") or ""),
+                "s": str(payload.source or "ui").strip()[:50],
+                "l": str(payload.level or "info").strip()[:20],
+                "m": message[:4000],
+            },
+        )
+        db.commit()
+        return {"status": "created"}
+    finally:
+        db.close()
+
+
 @app.post("/admin/users")
 def create_user(payload: UserCreate, user=Depends(get_current_user)):
     db = SessionLocal()
@@ -391,6 +673,113 @@ def create_user(payload: UserCreate, user=Depends(get_current_user)):
         )
         db.commit()
         return {"status": "created"}
+    finally:
+        db.close()
+
+
+@app.post("/admin/targets/import-csv")
+async def import_targets_csv(
+    file: UploadFile = File(...), user=Depends(get_current_user)
+):
+    csv_bytes = await file.read()
+    if not csv_bytes:
+        raise HTTPException(status_code=400, detail="CSV file is empty.")
+
+    parsed = _parse_targets_csv(csv_bytes)
+    parsed_rows = parsed["parsed_rows"]
+    candidates = parsed["candidates"]
+    file_duplicates = parsed["file_duplicates"]
+    invalid_rows = parsed["invalid_rows"]
+
+    if parsed_rows == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV file is empty. Add rows like hostname,port (no header).",
+        )
+
+    db = SessionLocal()
+    try:
+        existing_rows = db.execute(
+            text("SELECT hostname, port FROM targets")
+        ).fetchall()
+        existing_keys = {
+            (
+                str(r._mapping["hostname"] or "").strip().lower(),
+                int(r._mapping["port"]),
+            )
+            for r in existing_rows
+        }
+
+        to_insert = []
+        already_in_db = 0
+        for item in candidates:
+            key = (item["hostname"].lower(), int(item["port"]))
+            if key in existing_keys:
+                already_in_db += 1
+                continue
+            to_insert.append(item)
+            existing_keys.add(key)
+
+        inserted_target_ids = []
+        for item in to_insert:
+            row = db.execute(
+                text(
+                    """
+                    INSERT INTO targets (hostname, port)
+                    VALUES (:h, :p)
+                    RETURNING id
+                    """
+                ),
+                {"h": item["hostname"], "p": item["port"]},
+            ).fetchone()
+            if row:
+                inserted_target_ids.append(str(row._mapping["id"]))
+
+        db.commit()
+
+        for target_id in inserted_target_ids:
+            celery_client.send_task("worker.run_dns_lookup", args=[target_id])
+
+        return {
+            "status": "ok",
+            "parsed_rows": parsed_rows,
+            "added": len(inserted_target_ids),
+            "already_in_db": already_in_db,
+            "duplicates_in_file": file_duplicates,
+            "invalid_rows_count": len(invalid_rows),
+            "invalid_rows": invalid_rows[:20],
+            "note": "CSV must not contain a header row.",
+        }
+    finally:
+        db.close()
+
+
+@app.delete("/admin/users/{user_id}")
+def delete_user(user_id: str, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_users_table(db)
+        row = db.execute(
+            text("SELECT id, username FROM users WHERE id=:id"),
+            {"id": user_id},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        username = str(row._mapping["username"] or "")
+        current_username = str(user.get("username") or "")
+        if username == current_username:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete currently logged-in user",
+            )
+
+        db.execute(
+            text("DELETE FROM users WHERE id=:id"),
+            {"id": user_id},
+        )
+        db.commit()
+        return {"status": "deleted", "user_id": user_id}
     finally:
         db.close()
 
@@ -474,6 +863,71 @@ def update_proxy_config(
         )
         db.commit()
         return read_proxy_config(db)
+    finally:
+        db.close()
+
+
+@app.get("/config/scheduler")
+def get_scheduler_config(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        return read_scheduler_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/scheduler")
+def update_scheduler_config(
+    payload: SchedulerConfigUpdate, user=Depends(get_current_user)
+):
+    allowed_frequencies = {"hourly", "daily", "weekly", "interval"}
+    frequency = (payload.frequency or "").strip().lower()
+    if frequency not in allowed_frequencies:
+        raise HTTPException(
+            status_code=400,
+            detail="frequency must be one of: hourly, daily, weekly, interval",
+        )
+
+    if payload.day_of_week < 0 or payload.day_of_week > 6:
+        raise HTTPException(status_code=400, detail="day_of_week must be 0-6")
+    if payload.hour < 0 or payload.hour > 23:
+        raise HTTPException(status_code=400, detail="hour must be 0-23")
+    if payload.minute < 0 or payload.minute > 59:
+        raise HTTPException(status_code=400, detail="minute must be 0-59")
+    if payload.interval_minutes < 1 or payload.interval_minutes > 10080:
+        raise HTTPException(
+            status_code=400,
+            detail="interval_minutes must be between 1 and 10080",
+        )
+
+    db = SessionLocal()
+    try:
+        ensure_scheduler_config_table(db)
+        db.execute(
+            text(
+                """
+                UPDATE scheduler_config
+                SET enabled=:enabled,
+                    frequency=:frequency,
+                    day_of_week=:day_of_week,
+                    hour=:hour,
+                    minute=:minute,
+                    interval_minutes=:interval_minutes,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {
+                "enabled": bool(payload.enabled),
+                "frequency": frequency,
+                "day_of_week": int(payload.day_of_week),
+                "hour": int(payload.hour),
+                "minute": int(payload.minute),
+                "interval_minutes": int(payload.interval_minutes),
+            },
+        )
+        db.commit()
+        return read_scheduler_config(db)
     finally:
         db.close()
 

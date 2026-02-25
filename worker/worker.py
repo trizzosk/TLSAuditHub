@@ -9,11 +9,12 @@ from sslyze import (
 )
 from sqlalchemy import text
 from shared.database import SessionLocal
-from datetime import datetime
+from datetime import datetime, timedelta
 import ipaddress
 import uuid
 import json
 import re
+import ssl
 from fnmatch import fnmatchcase
 from diff import diff_sets, diff_dict
 from normalize import normalize_scan
@@ -21,6 +22,14 @@ from normalize import normalize_scan
 from celery.schedules import crontab
 import dns.resolver
 import whois
+from urllib.request import (
+    HTTPHandler,
+    HTTPSHandler,
+    HTTPRedirectHandler,
+    Request,
+    build_opener,
+)
+from urllib.error import HTTPError, URLError
 
 celery = Celery(
     "worker",
@@ -28,12 +37,170 @@ celery = Celery(
 )
 
 celery.conf.beat_schedule = {
-    "scan-all-targets-every-night": {
-        "task": "worker.run_scheduled_scans",
-        "schedule": crontab(hour=2, minute=0),
+    "evaluate-scan-schedule-every-minute": {
+        "task": "worker.maybe_run_scheduled_scans",
+        "schedule": crontab(minute="*"),
         "args": (),
     }
 }
+
+
+def ensure_scheduler_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS scheduler_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                frequency TEXT NOT NULL DEFAULT 'daily',
+                day_of_week INT NOT NULL DEFAULT 1,
+                hour INT NOT NULL DEFAULT 2,
+                minute INT NOT NULL DEFAULT 0,
+                interval_minutes INT NOT NULL DEFAULT 1440,
+                last_run_at TIMESTAMP NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT scheduler_config_singleton CHECK (id = 1),
+                CONSTRAINT scheduler_frequency_valid CHECK (
+                    frequency IN ('hourly', 'daily', 'weekly', 'interval')
+                ),
+                CONSTRAINT scheduler_day_valid CHECK (day_of_week BETWEEN 0 AND 6),
+                CONSTRAINT scheduler_hour_valid CHECK (hour BETWEEN 0 AND 23),
+                CONSTRAINT scheduler_minute_valid CHECK (minute BETWEEN 0 AND 59),
+                CONSTRAINT scheduler_interval_valid CHECK (
+                    interval_minutes BETWEEN 1 AND 10080
+                )
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO scheduler_config
+            (id, enabled, frequency, day_of_week, hour, minute, interval_minutes)
+            VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
+    db.commit()
+
+
+def _py_weekday_from_sunday_first(day_of_week: int) -> int:
+    # Python weekday: Monday=0..Sunday=6; config stores Sunday=0..Saturday=6.
+    return (int(day_of_week) + 6) % 7
+
+
+def _latest_scheduled_slot(now: datetime, config: dict) -> datetime | None:
+    frequency = str(config.get("frequency") or "daily").strip().lower()
+    hour = int(config.get("hour") or 0)
+    minute = int(config.get("minute") or 0)
+
+    if frequency == "hourly":
+        slot = now.replace(minute=minute, second=0, microsecond=0)
+        if slot > now:
+            slot -= timedelta(hours=1)
+        return slot
+
+    if frequency == "daily":
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if slot > now:
+            slot -= timedelta(days=1)
+        return slot
+
+    if frequency == "weekly":
+        target_weekday = _py_weekday_from_sunday_first(
+            int(config.get("day_of_week") or 0)
+        )
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        days_back = (slot.weekday() - target_weekday) % 7
+        slot -= timedelta(days=days_back)
+        if slot > now:
+            slot -= timedelta(days=7)
+        return slot
+
+    return None
+
+
+def _is_schedule_due(now: datetime, config: dict, last_run_at) -> tuple[bool, str]:
+    if not bool(config.get("enabled")):
+        return False, "disabled"
+
+    frequency = str(config.get("frequency") or "daily").strip().lower()
+    if frequency == "interval":
+        interval_minutes = max(1, int(config.get("interval_minutes") or 1))
+        if last_run_at is None:
+            return True, "first_interval_run"
+        if now - last_run_at >= timedelta(minutes=interval_minutes):
+            return True, "interval_elapsed"
+        return False, "interval_not_elapsed"
+
+    slot = _latest_scheduled_slot(now, config)
+    if slot is None:
+        return False, "unsupported_frequency"
+    if last_run_at is None:
+        return True, "first_slot_run"
+    if last_run_at < slot:
+        return True, "new_slot_due"
+    return False, "already_ran_for_slot"
+
+
+@celery.task
+def maybe_run_scheduled_scans():
+    db = SessionLocal()
+    now = datetime.utcnow().replace(second=0, microsecond=0)
+    try:
+        ensure_scheduler_config_table(db)
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  enabled,
+                  frequency,
+                  day_of_week,
+                  hour,
+                  minute,
+                  interval_minutes,
+                  last_run_at
+                FROM scheduler_config
+                WHERE id = 1
+                FOR UPDATE
+                """
+            )
+        ).fetchone()
+        if not row:
+            return {"status": "skipped", "reason": "missing_config"}
+
+        data = dict(row._mapping)
+        config = {
+            "enabled": bool(data.get("enabled")),
+            "frequency": data.get("frequency") or "daily",
+            "day_of_week": int(data.get("day_of_week") or 0),
+            "hour": int(data.get("hour") or 0),
+            "minute": int(data.get("minute") or 0),
+            "interval_minutes": int(data.get("interval_minutes") or 1),
+        }
+        due, reason = _is_schedule_due(now, config, data.get("last_run_at"))
+        if not due:
+            db.rollback()
+            return {"status": "skipped", "reason": reason}
+
+        db.execute(
+            text(
+                """
+                UPDATE scheduler_config
+                SET last_run_at=:run_at, updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {"run_at": now},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    run_scheduled_scans.delay()
+    return {"status": "queued", "reason": "due"}
 
 @celery.task
 def run_scheduled_scans():
@@ -116,7 +283,7 @@ def run_scan(target_id: str):
 
         for server_result in scanner.get_results():
             for plugin_name, plugin_result in _extract_plugin_results(
-                server_result
+                server_result, target["hostname"], target["port"]
             ):
                 db.execute(
                     text("""
@@ -235,7 +402,7 @@ def run_dns_lookup(target_id: str):
         db.close()
 
 
-def _extract_plugin_results(server_result):
+def _extract_plugin_results(server_result, hostname, port):
     if not server_result.scan_result:
         return []
 
@@ -358,7 +525,12 @@ def _extract_plugin_results(server_result):
     headers_attempt = server_result.scan_result.http_headers
     if headers_attempt.result is not None:
         extracted.append(
-            ("http_headers", _serialize_http_headers(headers_attempt.result))
+            (
+                "http_headers",
+                _serialize_http_headers(
+                    headers_attempt.result, hostname, port
+                ),
+            )
         )
 
     heartbleed_attempt = server_result.scan_result.heartbleed
@@ -657,7 +829,56 @@ def _should_use_proxy(hostname, proxy_cfg):
     return True
 
 
-def _serialize_http_headers(headers_result):
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _https_url(hostname, port):
+    host = str(hostname or "").strip()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"https://{host}:{int(port)}/"
+
+
+def _probe_http_status_code(hostname, port):
+    host = str(hostname or "").strip()
+    if not host:
+        return None
+
+    try:
+        url = _https_url(host, port)
+    except Exception:
+        return None
+
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        opener = build_opener(
+            _NoRedirectHandler(),
+            HTTPSHandler(context=context),
+            HTTPHandler(),
+        )
+        request = Request(
+            url,
+            method="GET",
+            headers={"User-Agent": "TLSAuditHub/1.0"},
+        )
+        with opener.open(request, timeout=8) as response:
+            return int(response.getcode())
+    except HTTPError as exc:
+        try:
+            return int(exc.code)
+        except Exception:
+            return None
+    except (URLError, TimeoutError, ssl.SSLError, OSError):
+        return None
+    except Exception:
+        return None
+
+
+def _serialize_http_headers(headers_result, hostname, port):
     hsts = headers_result.strict_transport_security_header
     hsts_payload = None
     if hsts is not None:
@@ -667,7 +888,17 @@ def _serialize_http_headers(headers_result):
             "preload": bool(hsts.preload),
         }
 
+    status_code = None
+    for attr in ("http_status_code", "status_code", "http_response_status_code"):
+        value = getattr(headers_result, attr, None)
+        if isinstance(value, int):
+            status_code = value
+            break
+    if status_code is None:
+        status_code = _probe_http_status_code(hostname, port)
+
     return {
+        "http_status_code": status_code,
         "http_path_redirected_to": headers_result.http_path_redirected_to,
         "strict_transport_security": hsts_payload,
     }

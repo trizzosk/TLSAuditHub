@@ -137,7 +137,11 @@
         <section class="card">
           <div class="section-header">
             <h3>Spoofable Domains</h3>
-            <button id="refreshSpoofableBtn" type="button">Refresh</button>
+            <div class="section-actions">
+              <button id="exportSpoofableCsvBtn" type="button">Export CSV</button>
+              <button id="exportSpoofablePdfBtn" type="button">Export PDF (A4)</button>
+              <button id="refreshSpoofableBtn" type="button">Refresh</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
@@ -220,94 +224,218 @@
       </section>
 
       <section id="adminView" class="view">
-        <section class="card">
-          <div class="section-header">
-            <h3>User Management</h3>
-            <button id="refreshUsersBtn" type="button">Refresh Users</button>
-          </div>
-          <form id="userForm" class="proxy-form">
-            <div class="proxy-grid">
-              <div class="form-field">
-                <label for="userUsername">Username</label>
-                <input id="userUsername" type="text" placeholder="username" required>
+        <div id="adminShell" class="admin-shell">
+          <aside id="adminNav" class="admin-nav">
+            <button class="admin-nav-item active" type="button" data-admin-page="adminUsersPage">Users</button>
+            <button class="admin-nav-item" type="button" data-admin-page="adminProxyPage">Proxy</button>
+            <button class="admin-nav-item" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
+            <button class="admin-nav-item" type="button" data-admin-page="adminImportPage">Bulk Import</button>
+            <button class="admin-nav-item" type="button" data-admin-page="adminLogPage">Event Log</button>
+          </aside>
+          <div class="admin-content">
+            <section class="card admin-toolbar-card">
+              <div class="section-header">
+                <h3 id="adminPageTitle">Users</h3>
+                <button id="adminNavToggleBtn" type="button" class="ghost-btn admin-nav-toggle">Admin Menu</button>
               </div>
-              <div class="form-field">
-                <label for="userPassword">Password</label>
-                <input id="userPassword" type="password" placeholder="temporary password" required>
-              </div>
-              <div class="form-field">
-                <label for="userName">Name</label>
-                <input id="userName" type="text" placeholder="First name">
-              </div>
-              <div class="form-field">
-                <label for="userSurname">Surname</label>
-                <input id="userSurname" type="text" placeholder="Last name">
-              </div>
-              <div class="form-field">
-                <label for="userEmail">Email</label>
-                <input id="userEmail" type="email" placeholder="user@company.com">
-              </div>
-            </div>
-            <button type="submit" id="createUserBtn">Create User</button>
-          </form>
-          <div class="table-wrap">
-            <table>
-              <thead>
+            </section>
+
+            <section id="adminUsersPage" class="admin-page active">
+              <section class="card">
+                <div class="section-header">
+                  <h3>User Management</h3>
+                  <button id="refreshUsersBtn" type="button">Refresh Users</button>
+                </div>
+                <form id="userForm" class="proxy-form">
+                  <div class="proxy-grid">
+                    <div class="form-field">
+                      <label for="userUsername">Username</label>
+                      <input id="userUsername" type="text" placeholder="username" required>
+                    </div>
+                    <div class="form-field">
+                      <label for="userPassword">Password</label>
+                      <input id="userPassword" type="password" placeholder="temporary password" required>
+                    </div>
+                    <div class="form-field">
+                      <label for="userName">Name</label>
+                      <input id="userName" type="text" placeholder="First name">
+                    </div>
+                    <div class="form-field">
+                      <label for="userSurname">Surname</label>
+                      <input id="userSurname" type="text" placeholder="Last name">
+                    </div>
+                    <div class="form-field">
+                      <label for="userEmail">Email</label>
+                      <input id="userEmail" type="email" placeholder="user@company.com">
+                    </div>
+                  </div>
+                  <button type="submit" id="createUserBtn">Create User</button>
+                </form>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
                 <tr>
                   <th>Username</th>
                   <th>Name</th>
                   <th>Surname</th>
                   <th>Email</th>
                   <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="usersBody">
-                <tr><td colspan="5" class="muted">No users loaded</td></tr>
+                <tr><td colspan="6" class="muted">No users loaded</td></tr>
               </tbody>
             </table>
           </div>
         </section>
+            </section>
 
-        <section class="card">
-          <div class="section-header">
-            <h3>Proxy Configuration</h3>
-            <button id="reloadProxyBtn" type="button">Reload Proxy Config</button>
+            <section id="adminProxyPage" class="admin-page">
+              <section class="card">
+                <div class="section-header">
+                  <h3>Proxy Configuration</h3>
+                  <button id="reloadProxyBtn" type="button">Reload Proxy Config</button>
+                </div>
+                <form id="proxyForm" class="proxy-form">
+                  <label class="checkbox-row">
+                    <input id="proxyEnabled" type="checkbox">
+                    <span>Enable HTTP Proxy For Scans</span>
+                  </label>
+                  <div class="proxy-grid">
+                    <div class="form-field">
+                      <label for="proxyHost">Proxy Host</label>
+                      <input id="proxyHost" type="text" placeholder="proxy.company.local">
+                    </div>
+                    <div class="form-field">
+                      <label for="proxyPort">Proxy Port</label>
+                      <input id="proxyPort" type="number" min="1" max="65535" value="8080">
+                    </div>
+                    <div class="form-field">
+                      <label for="proxyUsername">Proxy Username</label>
+                      <input id="proxyUsername" type="text" placeholder="optional">
+                    </div>
+                    <div class="form-field">
+                      <label for="proxyPassword">Proxy Password</label>
+                      <input id="proxyPassword" type="password" placeholder="leave empty to keep current">
+                    </div>
+                  </div>
+                  <div class="form-field">
+                    <label for="proxyNoProxyPatterns">Do Not Use Proxy For (wildcards allowed)</label>
+                    <textarea id="proxyNoProxyPatterns" rows="3" placeholder="*.domain.local, *.corp.internal, localhost"></textarea>
+                  </div>
+                  <button type="submit" id="saveProxyBtn">Save Proxy Config</button>
+                </form>
+              </section>
+            </section>
+
+            <section id="adminSchedulerPage" class="admin-page">
+              <section class="card">
+                <div class="section-header">
+                  <h3>Scan Scheduler</h3>
+                  <button id="reloadSchedulerBtn" type="button">Reload Scheduler Config</button>
+                </div>
+                <form id="schedulerForm" class="proxy-form">
+                  <label class="checkbox-row">
+                    <input id="schedulerEnabled" type="checkbox" checked>
+                    <span>Enable Scheduled Scan Runs</span>
+                  </label>
+
+                  <div class="proxy-grid">
+                    <div class="form-field">
+                      <label for="schedulerFrequency">Frequency</label>
+                      <select id="schedulerFrequency">
+                        <option value="daily">Daily</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="hourly">Hourly</option>
+                        <option value="interval">Every N Minutes</option>
+                      </select>
+                    </div>
+                    <div class="form-field" id="schedulerDayWrap">
+                      <label for="schedulerDayOfWeek">Day Of Week</label>
+                      <select id="schedulerDayOfWeek">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                      </select>
+                    </div>
+                    <div class="form-field" id="schedulerTimeWrap">
+                      <label for="schedulerTime">Time (UTC)</label>
+                      <input id="schedulerTime" type="time" value="02:00">
+                    </div>
+                    <div class="form-field hidden" id="schedulerIntervalWrap">
+                      <label for="schedulerIntervalMinutes">Interval (Minutes)</label>
+                      <input id="schedulerIntervalMinutes" type="number" min="1" max="10080" value="1440">
+                    </div>
+                  </div>
+                  <p id="schedulerLastRunInfo" class="form-hint">Last run: never</p>
+                  <button type="submit" id="saveSchedulerBtn">Save Scheduler Config</button>
+                </form>
+              </section>
+            </section>
+
+            <section id="adminImportPage" class="admin-page">
+              <section class="card">
+                <div class="section-header">
+                  <h3>Bulk Import Targets</h3>
+                </div>
+                <form id="bulkTargetsForm" class="proxy-form">
+                  <div class="form-field">
+                    <label for="targetsCsvFile">CSV File</label>
+                    <input id="targetsCsvFile" type="file" accept=".csv,text/csv" required>
+                    <p class="form-hint">CSV format: one target per line as <span class="tiny-mono">hostname,port</span> or <span class="tiny-mono">hostname</span>. Do not include a header row.</p>
+                  </div>
+                  <button type="submit" id="importTargetsBtn">Import CSV</button>
+                </form>
+              </section>
+            </section>
+
+            <section id="adminLogPage" class="admin-page">
+              <section class="card">
+                <h3>Live Session Log</h3>
+                <pre id="logPanel">Ready.</pre>
+              </section>
+              <section class="card">
+                <div class="section-header">
+                  <h3>Stored Event History</h3>
+                  <button id="refreshEventLogBtn" type="button">Refresh History</button>
+                </div>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>User</th>
+                        <th>Source</th>
+                        <th>Level</th>
+                        <th>Message</th>
+                      </tr>
+                    </thead>
+                    <tbody id="eventLogBody">
+                      <tr><td colspan="5" class="muted">No event history loaded</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="table-controls">
+                  <label for="eventLogPageSize">Rows</label>
+                  <select id="eventLogPageSize">
+                    <option value="10">10</option>
+                    <option value="25" selected>25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                  </select>
+                  <button id="eventLogPrevBtn" type="button">Prev</button>
+                  <span id="eventLogPageInfo" class="muted">Page 1 of 1</span>
+                  <button id="eventLogNextBtn" type="button">Next</button>
+                </div>
+              </section>
+            </section>
           </div>
-          <form id="proxyForm" class="proxy-form">
-            <label class="checkbox-row">
-              <input id="proxyEnabled" type="checkbox">
-              <span>Enable HTTP Proxy For Scans</span>
-            </label>
-            <div class="proxy-grid">
-              <div class="form-field">
-                <label for="proxyHost">Proxy Host</label>
-                <input id="proxyHost" type="text" placeholder="proxy.company.local">
-              </div>
-              <div class="form-field">
-                <label for="proxyPort">Proxy Port</label>
-                <input id="proxyPort" type="number" min="1" max="65535" value="8080">
-              </div>
-              <div class="form-field">
-                <label for="proxyUsername">Proxy Username</label>
-                <input id="proxyUsername" type="text" placeholder="optional">
-              </div>
-              <div class="form-field">
-                <label for="proxyPassword">Proxy Password</label>
-                <input id="proxyPassword" type="password" placeholder="leave empty to keep current">
-              </div>
-            </div>
-            <div class="form-field">
-              <label for="proxyNoProxyPatterns">Do Not Use Proxy For (wildcards allowed)</label>
-              <textarea id="proxyNoProxyPatterns" rows="3" placeholder="*.domain.local, *.corp.internal, localhost"></textarea>
-            </div>
-            <button type="submit" id="saveProxyBtn">Save Proxy Config</button>
-          </form>
-        </section>
-
-        <section class="card">
-          <h3>Event Log</h3>
-          <pre id="logPanel">Ready.</pre>
-        </section>
+        </div>
       </section>
     </main>
   </div>

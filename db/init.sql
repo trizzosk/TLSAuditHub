@@ -48,6 +48,15 @@ CREATE TABLE scan_diffs (
     diff JSONB
 );
 
+CREATE TABLE IF NOT EXISTS event_logs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    username TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'ui',
+    level TEXT NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS proxy_config (
     id INT PRIMARY KEY DEFAULT 1,
     enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -63,6 +72,32 @@ CREATE TABLE IF NOT EXISTS proxy_config (
 INSERT INTO proxy_config
 (id, enabled, host, port, username, password, no_proxy_patterns)
 VALUES (1, FALSE, '', 8080, '', '', '')
+ON CONFLICT (id)
+DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS scheduler_config (
+    id INT PRIMARY KEY DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    frequency TEXT NOT NULL DEFAULT 'daily',
+    day_of_week INT NOT NULL DEFAULT 1,
+    hour INT NOT NULL DEFAULT 2,
+    minute INT NOT NULL DEFAULT 0,
+    interval_minutes INT NOT NULL DEFAULT 1440,
+    last_run_at TIMESTAMP NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    CONSTRAINT scheduler_config_singleton CHECK (id = 1),
+    CONSTRAINT scheduler_frequency_valid CHECK (
+        frequency IN ('hourly', 'daily', 'weekly', 'interval')
+    ),
+    CONSTRAINT scheduler_day_valid CHECK (day_of_week BETWEEN 0 AND 6),
+    CONSTRAINT scheduler_hour_valid CHECK (hour BETWEEN 0 AND 23),
+    CONSTRAINT scheduler_minute_valid CHECK (minute BETWEEN 0 AND 59),
+    CONSTRAINT scheduler_interval_valid CHECK (interval_minutes BETWEEN 1 AND 10080)
+);
+
+INSERT INTO scheduler_config
+(id, enabled, frequency, day_of_week, hour, minute, interval_minutes)
+VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
 ON CONFLICT (id)
 DO NOTHING;
 
