@@ -10,6 +10,7 @@ TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across servic
 - Jobs view to track scan status and history.
 - Results view for job output details.
 - Spoofable report view to highlight domains with weak SPF/DMARC posture.
+- DNS data collection per target (WHOIS, NS, MX, SPF, DMARC) used by reports.
 - Admin proxy configuration for outbound scan traffic.
 - UI prototype for exercising the API and dashboards.
 
@@ -31,3 +32,4 @@ The repo ships as a multi-service Docker Compose stack (API, worker, scheduler, 
 - The UI prototype is in `ui-prototype/` and intended for workflow validation.
 - The UI presents only the login form until authenticated.
 - The Spoofable report uses stored DNS data (SPF/DMARC) per target to classify spoofing risk.
+- DNS data is collected in the background when a target is added.
