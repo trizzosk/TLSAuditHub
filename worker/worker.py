@@ -10,6 +10,7 @@ from sslyze import (
 from sqlalchemy import text
 from shared.database import SessionLocal
 from datetime import datetime
+import ipaddress
 import uuid
 import json
 import re
@@ -18,6 +19,8 @@ from diff import diff_sets, diff_dict
 from normalize import normalize_scan
 
 from celery.schedules import crontab
+import dns.resolver
+import whois
 
 celery = Celery(
     "worker",
@@ -95,6 +98,10 @@ def run_scan(target_id: str):
             server_location=server_location,
             scan_commands={
                 ScanCommand.CERTIFICATE_INFO,
+                ScanCommand.SSL_2_0_CIPHER_SUITES,
+                ScanCommand.SSL_3_0_CIPHER_SUITES,
+                ScanCommand.TLS_1_0_CIPHER_SUITES,
+                ScanCommand.TLS_1_1_CIPHER_SUITES,
                 ScanCommand.TLS_1_2_CIPHER_SUITES,
                 ScanCommand.TLS_1_3_CIPHER_SUITES,
                 ScanCommand.HTTP_HEADERS,
@@ -199,6 +206,35 @@ def run_scan(target_id: str):
         db.close()
 
 
+@celery.task
+def run_dns_lookup(target_id: str):
+    db = SessionLocal()
+    try:
+        _ensure_target_dns_table(db)
+        row = db.execute(
+            text("SELECT hostname FROM targets WHERE id=:id"),
+            {"id": target_id},
+        ).fetchone()
+        if not row:
+            return
+        hostname = row._mapping["hostname"]
+        payload = _build_dns_payload(hostname)
+        db.execute(
+            text(
+                """
+                INSERT INTO target_dns (target_id, data, updated_at)
+                VALUES (:tid, CAST(:data AS jsonb), now())
+                ON CONFLICT (target_id)
+                DO UPDATE SET data=EXCLUDED.data, updated_at=now()
+                """
+            ),
+            {"tid": target_id, "data": json.dumps(payload)},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def _extract_plugin_results(server_result):
     if not server_result.scan_result:
         return []
@@ -214,6 +250,74 @@ def _extract_plugin_results(server_result):
             (
                 "certificate_info",
                 _serialize_certificate_info(cert_attempt.result),
+            )
+        )
+
+    ssl2_attempt = server_result.scan_result.ssl_2_0_cipher_suites
+    if ssl2_attempt.result is not None:
+        extracted.append(
+            (
+                "ssl_2_0_cipher_suites",
+                {
+                    "accepted_cipher_suites": [
+                        item.cipher_suite.name
+                        for item in ssl2_attempt.result.accepted_cipher_suites
+                    ],
+                    "is_protocol_supported": bool(
+                        ssl2_attempt.result.is_tls_version_supported
+                    ),
+                },
+            )
+        )
+
+    ssl3_attempt = server_result.scan_result.ssl_3_0_cipher_suites
+    if ssl3_attempt.result is not None:
+        extracted.append(
+            (
+                "ssl_3_0_cipher_suites",
+                {
+                    "accepted_cipher_suites": [
+                        item.cipher_suite.name
+                        for item in ssl3_attempt.result.accepted_cipher_suites
+                    ],
+                    "is_protocol_supported": bool(
+                        ssl3_attempt.result.is_tls_version_supported
+                    ),
+                },
+            )
+        )
+
+    tls10_attempt = server_result.scan_result.tls_1_0_cipher_suites
+    if tls10_attempt.result is not None:
+        extracted.append(
+            (
+                "tls_1_0_cipher_suites",
+                {
+                    "accepted_cipher_suites": [
+                        item.cipher_suite.name
+                        for item in tls10_attempt.result.accepted_cipher_suites
+                    ],
+                    "is_protocol_supported": bool(
+                        tls10_attempt.result.is_tls_version_supported
+                    ),
+                },
+            )
+        )
+
+    tls11_attempt = server_result.scan_result.tls_1_1_cipher_suites
+    if tls11_attempt.result is not None:
+        extracted.append(
+            (
+                "tls_1_1_cipher_suites",
+                {
+                    "accepted_cipher_suites": [
+                        item.cipher_suite.name
+                        for item in tls11_attempt.result.accepted_cipher_suites
+                    ],
+                    "is_protocol_supported": bool(
+                        tls11_attempt.result.is_tls_version_supported
+                    ),
+                },
             )
         )
 
@@ -387,6 +491,148 @@ def _get_proxy_config(db):
         "no_proxy_patterns": data["no_proxy_patterns"] or "",
     }
 
+
+def _ensure_target_dns_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS target_dns (
+                target_id UUID PRIMARY KEY REFERENCES targets(id),
+                data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMP NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+    db.commit()
+
+
+def _safe_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+def _is_ip_address(hostname):
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_records(name, rdtype):
+    try:
+        answers = dns.resolver.resolve(name, rdtype, lifetime=5)
+    except Exception:
+        return []
+
+    records = []
+    for rdata in answers:
+        if rdtype == "NS":
+            records.append(str(rdata.target).rstrip("."))
+        elif rdtype == "MX":
+            records.append(
+                {
+                    "preference": int(rdata.preference),
+                    "exchange": str(rdata.exchange).rstrip("."),
+                }
+            )
+        elif rdtype == "TXT":
+            parts = []
+            if hasattr(rdata, "strings"):
+                for part in rdata.strings:
+                    if isinstance(part, bytes):
+                        parts.append(part.decode(errors="replace"))
+                    else:
+                        parts.append(str(part))
+            else:
+                parts.append(str(rdata))
+            records.append("".join(parts))
+        else:
+            records.append(str(rdata))
+    return records
+
+
+def _extract_spf(txt_records):
+    for record in txt_records:
+        if str(record).lower().startswith("v=spf1"):
+            return record
+    return ""
+
+
+def _extract_dmarc(txt_records):
+    for record in txt_records:
+        if str(record).lower().startswith("v=dmarc1"):
+            return record
+    return ""
+
+
+def _parse_dmarc_policy(record):
+    if not record:
+        return ""
+    parts = [p.strip() for p in str(record).split(";") if p.strip()]
+    for part in parts:
+        if part.lower().startswith("p="):
+            return part.split("=", 1)[1].strip()
+    return ""
+
+
+def _build_dns_payload(hostname):
+    host = str(hostname or "").strip()
+    payload = {
+        "hostname": host,
+        "whois": {},
+        "ns": [],
+        "mx": [],
+        "spf": "",
+        "dmarc": {"record": "", "policy": "", "domain": ""},
+    }
+
+    if not host:
+        return payload
+
+    is_ip = _is_ip_address(host)
+
+    if not is_ip:
+        payload["ns"] = _resolve_records(host, "NS")
+        payload["mx"] = _resolve_records(host, "MX")
+        txt_records = _resolve_records(host, "TXT")
+        payload["spf"] = _extract_spf(txt_records)
+
+        dmarc_domain = f"_dmarc.{host}"
+        dmarc_txt = _resolve_records(dmarc_domain, "TXT")
+        dmarc_record = _extract_dmarc(dmarc_txt)
+        payload["dmarc"] = {
+            "record": dmarc_record,
+            "policy": _parse_dmarc_policy(dmarc_record),
+            "domain": dmarc_domain,
+        }
+
+    try:
+        whois_result = whois.whois(host)
+        payload["whois"] = {
+            "domain_name": _safe_list(getattr(whois_result, "domain_name", None)),
+            "registrar": getattr(whois_result, "registrar", None),
+            "creation_date": _safe_list(
+                getattr(whois_result, "creation_date", None)
+            ),
+            "expiration_date": _safe_list(
+                getattr(whois_result, "expiration_date", None)
+            ),
+            "updated_date": _safe_list(
+                getattr(whois_result, "updated_date", None)
+            ),
+            "name_servers": _safe_list(
+                getattr(whois_result, "name_servers", None)
+            ),
+        }
+    except Exception as exc:
+        payload["whois"] = {"error": str(exc)}
+
+    return payload
 
 def _parse_no_proxy_patterns(raw_patterns):
     if not raw_patterns:

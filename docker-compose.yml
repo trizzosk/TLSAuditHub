@@ -38,7 +38,7 @@ services:
       - ./app:/app/shared
     working_dir: /app
     command: >
-      sh -c "pip install sslyze celery redis psycopg2-binary sqlalchemy &&
+      sh -c "pip install sslyze celery redis psycopg2-binary sqlalchemy dnspython python-whois &&
              celery -A worker worker --loglevel=info"
     depends_on:
       - redis

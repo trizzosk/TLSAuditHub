@@ -68,6 +68,21 @@ def ensure_proxy_config_table(db):
     db.commit()
 
 
+def ensure_target_dns_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS target_dns (
+                target_id UUID PRIMARY KEY REFERENCES targets(id),
+                data JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMP NOT NULL DEFAULT now()
+            )
+            """
+        )
+    )
+    db.commit()
+
+
 def read_proxy_config(db):
     ensure_proxy_config_table(db)
     row = db.execute(
@@ -95,6 +110,7 @@ def init_proxy_config():
     db = SessionLocal()
     try:
         ensure_proxy_config_table(db)
+        ensure_target_dns_table(db)
     finally:
         db.close()
 
@@ -108,32 +124,135 @@ def health():
 def add_target(hostname: str, port: int = 443, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
-        db.execute(
+        row = db.execute(
             text(
-                "INSERT INTO targets (hostname, port) VALUES (:h, :p)"
+                "INSERT INTO targets (hostname, port) VALUES (:h, :p) RETURNING id"
             ),
             {"h": hostname, "p": port},
-        )
+        ).fetchone()
         db.commit()
-        return {"status": "added"}
+        target_id = row._mapping["id"] if row else None
+        if target_id:
+            celery_client.send_task(
+                "worker.run_dns_lookup",
+                args=[str(target_id)],
+            )
+        return {"status": "added", "target_id": target_id}
     finally:
         db.close()
 
 
 @app.get("/targets")
-def list_targets(user=Depends(get_current_user)):
+def list_targets(
+    limit: int = 0, offset: int = 0, user=Depends(get_current_user)
+):
     db = SessionLocal()
     try:
+        total_row = db.execute(
+            text("SELECT COUNT(*) AS total FROM targets")
+        ).fetchone()
+        total = int(total_row._mapping["total"]) if total_row else 0
+
+        if limit and limit > 0:
+            limit_clause = "LIMIT :limit OFFSET :offset"
+            params = {"limit": limit, "offset": offset}
+        else:
+            limit_clause = ""
+            params = {}
+
         rows = db.execute(
             text(
-                """
+                f"""
                 SELECT id, hostname, port, enabled, scan_interval_minutes
                 FROM targets
                 ORDER BY hostname ASC, port ASC
+                {limit_clause}
                 """
             )
+            ,
+            params,
         ).fetchall()
-        return [dict(r._mapping) for r in rows]
+        return {
+            "items": [dict(r._mapping) for r in rows],
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/targets/{target_id}/dns")
+def get_target_dns(target_id: str, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_target_dns_table(db)
+        row = db.execute(
+            text(
+                """
+                SELECT data, updated_at
+                FROM target_dns
+                WHERE target_id=:tid
+                """
+            ),
+            {"tid": target_id},
+        ).fetchone()
+        if not row:
+            celery_client.send_task("worker.run_dns_lookup", args=[target_id])
+            return {"status": "pending", "data": {}, "updated_at": None}
+        data = dict(row._mapping)
+        return {
+            "status": "ok",
+            "data": data.get("data") or {},
+            "updated_at": data.get("updated_at"),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/dns/spoofable")
+def list_spoofable_targets(
+    limit: int = 0, offset: int = 0, user=Depends(get_current_user)
+):
+    db = SessionLocal()
+    try:
+        ensure_target_dns_table(db)
+        total_row = db.execute(
+            text("SELECT COUNT(*) AS total FROM targets")
+        ).fetchone()
+        total = int(total_row._mapping["total"]) if total_row else 0
+
+        if limit and limit > 0:
+            limit_clause = "LIMIT :limit OFFSET :offset"
+            params = {"limit": limit, "offset": offset}
+        else:
+            limit_clause = ""
+            params = {}
+
+        rows = db.execute(
+            text(
+                f"""
+                SELECT t.id, t.hostname, d.data
+                FROM targets t
+                LEFT JOIN target_dns d ON d.target_id = t.id
+                ORDER BY t.hostname ASC
+                {limit_clause}
+                """
+            )
+            ,
+            params,
+        ).fetchall()
+        payload = []
+        for row in rows:
+            data = row._mapping.get("data") or {}
+            dmarc = data.get("dmarc") or {}
+            payload.append(
+                {
+                    "id": row._mapping["id"],
+                    "hostname": row._mapping["hostname"],
+                    "spf": data.get("spf") or "",
+                    "dmarc_policy": dmarc.get("policy") or "",
+                }
+            )
+        return {"items": payload, "total": total}
     finally:
         db.close()
 
@@ -151,6 +270,7 @@ def remove_target(target_id: str, user=Depends(get_current_user)):
             raise HTTPException(status_code=404, detail="Target not found")
 
         db.execute(text("DELETE FROM scan_results WHERE scan_id IN (SELECT id FROM scans WHERE target_id=:tid)"), {"tid": target_id})
+        db.execute(text("DELETE FROM target_dns WHERE target_id=:tid"), {"tid": target_id})
         db.execute(text("DELETE FROM scan_diffs WHERE target_id=:tid"), {"tid": target_id})
         db.execute(text("DELETE FROM scans WHERE target_id=:tid"), {"tid": target_id})
         db.execute(text("DELETE FROM targets WHERE id=:tid"), {"tid": target_id})
@@ -282,12 +402,32 @@ def update_proxy_config(
 
 
 @app.get("/jobs")
-def list_jobs(limit: int = 50, user=Depends(get_current_user)):
+def list_jobs(
+    limit: int = 0, offset: int = 0, user=Depends(get_current_user)
+):
     db = SessionLocal()
     try:
-        rows = db.execute(
+        total_row = db.execute(
             text(
                 """
+                SELECT COUNT(*) AS total
+                FROM scans
+                WHERE status IS NULL OR status != 'purged'
+                """
+            )
+        ).fetchone()
+        total = int(total_row._mapping["total"]) if total_row else 0
+
+        if limit and limit > 0:
+            limit_clause = "LIMIT :limit OFFSET :offset"
+            params = {"limit": limit, "offset": offset}
+        else:
+            limit_clause = ""
+            params = {}
+
+        rows = db.execute(
+            text(
+                f"""
                 SELECT
                   s.id,
                   s.target_id,
@@ -298,13 +438,36 @@ def list_jobs(limit: int = 50, user=Depends(get_current_user)):
                   s.status
                 FROM scans s
                 LEFT JOIN targets t ON t.id = s.target_id
+                WHERE s.status IS NULL OR s.status != 'purged'
                 ORDER BY s.started_at DESC NULLS LAST
-                LIMIT :limit
+                {limit_clause}
                 """
             ),
-            {"limit": limit},
+            params,
         ).fetchall()
-        return [dict(r._mapping) for r in rows]
+        return {
+            "items": [dict(r._mapping) for r in rows],
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/jobs/purge")
+def purge_jobs(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                """
+                UPDATE scans
+                SET status='purged'
+                WHERE status IS NULL OR status != 'purged'
+                """
+            )
+        )
+        db.commit()
+        return {"status": "purged"}
     finally:
         db.close()
 

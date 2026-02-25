@@ -220,9 +220,22 @@ body.unauth .main-panel {
   gap: 8px;
 }
 
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-actions button {
+  white-space: nowrap;
+  width: auto;
+  min-width: 0;
+}
+
 #refreshTargetsBtn,
 #refreshJobsBtn,
-#reloadProxyBtn {
+#reloadProxyBtn,
+#refreshSpoofableBtn {
   width: auto;
   min-width: 0;
   padding: 10px 14px;
@@ -338,6 +351,39 @@ th {
   letter-spacing: 0.03em;
 }
 
+#spoofableView table {
+  table-layout: fixed;
+}
+
+#spoofableView th:nth-child(1),
+#spoofableView td:nth-child(1) {
+  width: 20%;
+}
+
+#spoofableView th:nth-child(2),
+#spoofableView td:nth-child(2) {
+  width: 40%;
+  white-space: normal;
+  word-break: break-word;
+}
+
+#spoofableView th:nth-child(3),
+#spoofableView td:nth-child(3) {
+  width: 20%;
+  white-space: normal;
+  word-break: break-word;
+}
+
+#spoofableView th:nth-child(4),
+#spoofableView td:nth-child(4) {
+  width: 20%;
+}
+
+#spoofableView .section-header button {
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
 pre {
   background: var(--panel-2);
   border: 1px solid #2a3b4a;
@@ -440,6 +486,30 @@ pre {
   color: #b8ffcf;
 }
 
+.table-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.table-controls label {
+  margin: 0;
+}
+
+.table-controls select,
+.table-controls button {
+  width: auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.table-controls span {
+  white-space: nowrap;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -451,12 +521,13 @@ pre {
   flex-wrap: nowrap;
 }
 
-.target-actions .run-scan-btn,
-.target-actions .delete-target-btn {
+.target-actions button {
+  flex: 0 0 auto;
   width: auto;
   min-width: 0;
-  padding: 8px 12px;
+  padding: 6px 10px;
   white-space: nowrap;
+  font-size: 0.85rem;
 }
 
 @media (max-width: 760px) {

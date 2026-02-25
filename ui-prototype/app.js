@@ -18,8 +18,24 @@ const ui = {
   port: document.getElementById("port"),
   refreshTargetsBtn: document.getElementById("refreshTargetsBtn"),
   targetsBody: document.getElementById("targetsBody"),
+  dnsPanel: document.getElementById("dnsPanel"),
+  targetsPageSize: document.getElementById("targetsPageSize"),
+  targetsPrevBtn: document.getElementById("targetsPrevBtn"),
+  targetsNextBtn: document.getElementById("targetsNextBtn"),
+  targetsPageInfo: document.getElementById("targetsPageInfo"),
+  refreshSpoofableBtn: document.getElementById("refreshSpoofableBtn"),
+  spoofableBody: document.getElementById("spoofableBody"),
+  spoofablePageSize: document.getElementById("spoofablePageSize"),
+  spoofablePrevBtn: document.getElementById("spoofablePrevBtn"),
+  spoofableNextBtn: document.getElementById("spoofableNextBtn"),
+  spoofablePageInfo: document.getElementById("spoofablePageInfo"),
   refreshJobsBtn: document.getElementById("refreshJobsBtn"),
+  purgeJobsBtn: document.getElementById("purgeJobsBtn"),
   jobsBody: document.getElementById("jobsBody"),
+  jobsPageSize: document.getElementById("jobsPageSize"),
+  jobsPrevBtn: document.getElementById("jobsPrevBtn"),
+  jobsNextBtn: document.getElementById("jobsNextBtn"),
+  jobsPageInfo: document.getElementById("jobsPageInfo"),
   selectedResultScanId: document.getElementById("selectedResultScanId"),
   jobResultsPanel: document.getElementById("jobResultsPanel"),
   proxyForm: document.getElementById("proxyForm"),
@@ -35,8 +51,15 @@ const ui = {
 
 let accessToken = "";
 let currentUsername = "";
+const jobIndex = new Map();
 const SESSION_TOKEN_KEY = "tlsaudithub_access_token";
 const SESSION_USER_KEY = "tlsaudithub_username";
+
+const pagination = {
+  targets: { page: 1, pageSize: 15, total: 0 },
+  jobs: { page: 1, pageSize: 15, total: 0 },
+  spoofable: { page: 1, pageSize: 15, total: 0 },
+};
 
 function baseUrl() {
   return "http://localhost:8000";
@@ -164,6 +187,7 @@ function activateView(viewId) {
     authView: "Login",
     dashboardView: "Dashboard",
     targetsView: "Hosts / Targets",
+    spoofableView: "Spoofable",
     jobsView: "Jobs",
     resultsView: "Results",
     adminView: "Admin",
@@ -197,6 +221,32 @@ function fmtDate(value) {
 
 function setMetric(node, value) {
   node.textContent = String(value ?? 0);
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getPageSize(node, fallback = 15) {
+  const value = Number(node?.value);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return value;
+}
+
+function updatePaginationUI(section, controls) {
+  const state = pagination[section];
+  const pageSize = state.pageSize;
+  const total = state.total || 0;
+  const totalPages =
+    pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  state.page = clamp(state.page, 1, totalPages);
+
+  controls.pageInfo.textContent = `Page ${state.page} of ${totalPages}`;
+  const disabled = pageSize === 0 || totalPages <= 1;
+  controls.prevBtn.disabled = disabled || state.page <= 1;
+  controls.nextBtn.disabled = disabled || state.page >= totalPages;
 }
 
 function escapeHtml(value) {
@@ -315,6 +365,71 @@ function normalizePluginName(plugin) {
   return normalized;
 }
 
+const PROTOCOL_PLUGINS = [
+  "ssl_2_0_cipher_suites",
+  "ssl_3_0_cipher_suites",
+  "tls_1_0_cipher_suites",
+  "tls_1_1_cipher_suites",
+  "tls_1_2_cipher_suites",
+  "tls_1_3_cipher_suites",
+];
+
+const PROTOCOL_LABELS = {
+  ssl_2_0_cipher_suites: "SSL 2.0",
+  ssl_3_0_cipher_suites: "SSL 3.0",
+  tls_1_0_cipher_suites: "TLS 1.0",
+  tls_1_1_cipher_suites: "TLS 1.1",
+  tls_1_2_cipher_suites: "TLS 1.2",
+  tls_1_3_cipher_suites: "TLS 1.3",
+};
+
+function protocolSeverity(plugin, supported) {
+  if (supported === null || supported === undefined) {
+    return "warn";
+  }
+  if (plugin.startsWith("ssl_")) {
+    return supported ? "bad" : "good";
+  }
+  if (plugin === "tls_1_3_cipher_suites") {
+    return supported ? "good" : "bad";
+  }
+  return supported ? "warn" : "good";
+}
+
+function renderProtocolSupport(results) {
+  const support = {};
+  PROTOCOL_PLUGINS.forEach((plugin) => {
+    support[plugin] = false;
+  });
+
+  results.forEach((row) => {
+    const plugin = normalizePluginName(row.plugin);
+    if (!PROTOCOL_PLUGINS.includes(plugin)) {
+      return;
+    }
+    const result = normalizeResult(row.result);
+    support[plugin] = Boolean(result?.is_protocol_supported);
+  });
+
+  const rows = PROTOCOL_PLUGINS.map((plugin) => {
+    const supported = support[plugin];
+    const label = PROTOCOL_LABELS[plugin] || plugin;
+    const value = fmtBool(Boolean(supported));
+    return {
+      label,
+      value,
+      severity: protocolSeverity(plugin, supported),
+    };
+  });
+
+  return `
+    <article class="result-card">
+      <h4>Protocol Support</h4>
+      ${renderSecurityCheck({}, rows)}
+    </article>
+  `;
+}
+
 function renderCertificateInfo(result) {
   const cert = result?.certificate_chain?.[0];
   if (!cert) {
@@ -404,8 +519,11 @@ function renderJobResults(results) {
   }
 
   ui.jobResultsPanel.classList.remove("muted");
-  ui.jobResultsPanel.innerHTML = results
-    .map((row) => {
+  const protocolCard = renderProtocolSupport(results);
+
+  ui.jobResultsPanel.innerHTML = [
+    protocolCard,
+    ...results.map((row) => {
       const plugin = normalizePluginName(row.plugin);
       const result = normalizeResult(row.result);
 
@@ -483,8 +601,8 @@ function renderJobResults(results) {
           ${body}
         </article>
       `;
-    })
-    .join("");
+    }),
+  ].join("");
 }
 
 async function loadDashboard() {
@@ -520,6 +638,7 @@ function renderTargets(targets) {
         <td>
           <div class="target-actions">
             <button data-target-id="${target.id}" class="run-scan-btn">Run Scan</button>
+            <button data-target-id="${target.id}" data-hostname="${target.hostname ?? ""}" class="dns-data-btn">DNS Data</button>
             <button data-target-id="${target.id}" class="delete-target-btn">Delete</button>
           </div>
         </td>
@@ -529,11 +648,135 @@ function renderTargets(targets) {
     .join("");
 }
 
+function renderDnsList(items, emptyLabel) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return `<p class='muted'>${emptyLabel}</p>`;
+  }
+  return `<ul class="result-list">${items
+    .map((item) => `<li class="tiny-mono">${escapeHtml(String(item))}</li>`)
+    .join("")}</ul>`;
+}
+
+function renderDnsData(targetLabel, payload) {
+  if (!payload || payload.status === "pending") {
+    return `<p class='muted'>DNS data is still being collected for ${escapeHtml(
+      targetLabel || "this target"
+    )}.</p>`;
+  }
+
+  if (payload.status !== "ok") {
+    return `<p class='muted'>DNS data unavailable.</p>`;
+  }
+
+  const data = payload.data || {};
+  const whois = data.whois || {};
+  const dmarc = data.dmarc || {};
+  const spfPresent = Boolean(data.spf);
+  const dmarcPresent = Boolean(dmarc.record);
+
+  return `
+    <article class="result-card">
+      <h4>Overview</h4>
+      <dl class="result-grid">
+        <dt>Hostname</dt><dd class="tiny-mono">${sevBadge(data.hostname || targetLabel || "-", "warn")}</dd>
+        <dt>Updated</dt><dd>${sevBadge(fmtDate(payload.updated_at), payload.updated_at ? "good" : "warn")}</dd>
+        <dt>SPF Record</dt><dd>${sevBadge(spfPresent ? "Yes" : "No", spfPresent ? "good" : "warn")}</dd>
+        <dt>DMARC Record</dt><dd>${sevBadge(dmarcPresent ? "Yes" : "No", dmarcPresent ? "good" : "warn")}</dd>
+        <dt>DMARC Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarc.policy ? "good" : "warn")}</dd>
+      </dl>
+    </article>
+    <article class="result-card">
+      <h4>NS Records</h4>
+      ${renderDnsList(data.ns, "No NS records found.")}
+    </article>
+    <article class="result-card">
+      <h4>MX Records</h4>
+      ${renderDnsList(
+        (Array.isArray(data.mx) ? data.mx : []).map(
+          (mx) =>
+            `${mx.exchange ?? "-"} (pref ${mx.preference ?? "-"})`
+        ),
+        "No MX records found."
+      )}
+    </article>
+    <article class="result-card">
+      <h4>SPF Record</h4>
+      ${spfPresent ? `<pre>${escapeHtml(data.spf)}</pre>` : "<p class='muted'>No SPF record found.</p>"}
+    </article>
+    <article class="result-card">
+      <h4>DMARC Record</h4>
+      <dl class="result-grid">
+        <dt>Lookup Domain</dt><dd class="tiny-mono">${sevBadge(dmarc.domain || "-", "warn")}</dd>
+        <dt>Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarc.policy ? "good" : "warn")}</dd>
+      </dl>
+      ${dmarcPresent ? `<pre>${escapeHtml(dmarc.record)}</pre>` : "<p class='muted'>No DMARC record found.</p>"}
+    </article>
+    <article class="result-card">
+      <h4>WHOIS</h4>
+      ${
+        whois.error
+          ? `<p class='muted'>WHOIS lookup failed: ${escapeHtml(whois.error)}</p>`
+          : `
+        <dl class="result-grid">
+          <dt>Registrar</dt><dd>${sevBadge(whois.registrar || "-", whois.registrar ? "good" : "warn")}</dd>
+          <dt>Domain Name</dt><dd class="tiny-mono">${sevBadge(
+            Array.isArray(whois.domain_name) ? whois.domain_name.join(", ") : whois.domain_name || "-",
+            "warn"
+          )}</dd>
+          <dt>Created</dt><dd>${sevBadge(
+            Array.isArray(whois.creation_date) ? whois.creation_date.join(", ") : whois.creation_date || "-",
+            "warn"
+          )}</dd>
+          <dt>Updated</dt><dd>${sevBadge(
+            Array.isArray(whois.updated_date) ? whois.updated_date.join(", ") : whois.updated_date || "-",
+            "warn"
+          )}</dd>
+          <dt>Expires</dt><dd>${sevBadge(
+            Array.isArray(whois.expiration_date) ? whois.expiration_date.join(", ") : whois.expiration_date || "-",
+            "warn"
+          )}</dd>
+          <dt>Name Servers</dt><dd class="tiny-mono">${sevBadge(
+            Array.isArray(whois.name_servers) ? whois.name_servers.join(", ") : whois.name_servers || "-",
+            "warn"
+          )}</dd>
+        </dl>
+      `
+      }
+    </article>
+  `;
+}
+
+async function loadDnsData(targetId, hostname) {
+  ui.dnsPanel.classList.remove("muted");
+  ui.dnsPanel.innerHTML = `<p class='muted'>Loading DNS data for ${escapeHtml(
+    hostname || targetId
+  )}...</p>`;
+  try {
+    const data = await apiRequest(`/targets/${targetId}/dns`, {
+      method: "GET",
+    });
+    ui.dnsPanel.innerHTML = renderDnsData(hostname, data);
+    log(`Loaded DNS data for target ${targetId}.`);
+  } catch (error) {
+    ui.dnsPanel.innerHTML = `<p class='muted'>DNS data load failed: ${escapeHtml(
+      error.message
+    )}</p>`;
+    log(`DNS data load failed: ${error.message}`);
+  }
+}
+
 function renderJobs(jobs) {
   if (!Array.isArray(jobs) || jobs.length === 0) {
     ui.jobsBody.innerHTML = "<tr><td colspan='6' class='muted'>No jobs found</td></tr>";
     return;
   }
+
+  jobIndex.clear();
+  jobs.forEach((job) => {
+    if (job && job.id) {
+      jobIndex.set(job.id, job);
+    }
+  });
 
   ui.jobsBody.innerHTML = jobs
     .map(
@@ -551,11 +794,99 @@ function renderJobs(jobs) {
     .join("");
 }
 
+function evaluateSpoofable(spf, dmarcPolicy) {
+  const spfValue = String(spf || "").trim().toLowerCase();
+  const policy = String(dmarcPolicy || "").trim().toLowerCase();
+  const spfStrict = spfValue.endsWith("-all");
+  const dmarcReject = policy === "reject" || policy === "quarantine";
+  const dmarcNone = policy === "" || policy === "none";
+
+  if (!spfStrict && dmarcNone) {
+    return { label: "Spoofable", severity: "bad" };
+  }
+  if (spfStrict && dmarcReject) {
+    return { label: "Not spoofable", severity: "good" };
+  }
+  return { label: "Needs review", severity: "warn" };
+}
+
+function renderSpoofableList(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    ui.spoofableBody.innerHTML =
+      "<tr><td colspan='4' class='muted'>No data available</td></tr>";
+    return;
+  }
+
+  ui.spoofableBody.innerHTML = items
+    .map((row) => {
+      const spf = row.spf || "-";
+      const dmarc = row.dmarc_policy || "-";
+      const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+      return `
+        <tr>
+          <td>${escapeHtml(row.hostname || "-")}</td>
+          <td class="tiny-mono">${escapeHtml(spf)}</td>
+          <td>${sevBadge(dmarc, dmarc && dmarc !== "-" ? "good" : "warn")}</td>
+          <td>${sevBadge(result.label, result.severity)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+async function refreshSpoofable() {
+  try {
+    pagination.spoofable.pageSize = getPageSize(ui.spoofablePageSize, 15);
+    const limit = pagination.spoofable.pageSize;
+    const offset =
+      limit > 0 ? (pagination.spoofable.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/dns/spoofable?${query.toString()}`, {
+      method: "GET",
+    });
+    pagination.spoofable.total = data.total ?? 0;
+    updatePaginationUI("spoofable", {
+      prevBtn: ui.spoofablePrevBtn,
+      nextBtn: ui.spoofableNextBtn,
+      pageInfo: ui.spoofablePageInfo,
+    });
+    renderSpoofableList(data.items || []);
+    log(
+      `Loaded spoofable report (${Array.isArray(data.items) ? data.items.length : 0} targets).`
+    );
+  } catch (error) {
+    ui.spoofableBody.innerHTML =
+      "<tr><td colspan='4' class='muted'>Failed to load spoofable report</td></tr>";
+    log(`Spoofable report load failed: ${error.message}`);
+  }
+}
+
 async function refreshTargets() {
   try {
-    const data = await apiRequest("/targets", { method: "GET" });
-    renderTargets(data);
-    log(`Loaded ${Array.isArray(data) ? data.length : 0} targets.`);
+    pagination.targets.pageSize = getPageSize(ui.targetsPageSize, 15);
+    const limit = pagination.targets.pageSize;
+    const offset =
+      limit > 0 ? (pagination.targets.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/targets?${query.toString()}`, {
+      method: "GET",
+    });
+    pagination.targets.total = data.total ?? 0;
+    updatePaginationUI("targets", {
+      prevBtn: ui.targetsPrevBtn,
+      nextBtn: ui.targetsNextBtn,
+      pageInfo: ui.targetsPageInfo,
+    });
+    renderTargets(data.items || []);
+    log(
+      `Loaded ${Array.isArray(data.items) ? data.items.length : 0} targets.`
+    );
   } catch (error) {
     log(`Target refresh failed: ${error.message}`);
   }
@@ -585,18 +916,50 @@ async function runScan(targetId) {
 
 async function refreshJobs() {
   try {
-    const data = await apiRequest("/jobs?limit=100", { method: "GET" });
-    renderJobs(data);
-    log(`Loaded ${Array.isArray(data) ? data.length : 0} jobs.`);
+    pagination.jobs.pageSize = getPageSize(ui.jobsPageSize, 15);
+    const limit = pagination.jobs.pageSize;
+    const offset =
+      limit > 0 ? (pagination.jobs.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/jobs?${query.toString()}`, {
+      method: "GET",
+    });
+    pagination.jobs.total = data.total ?? 0;
+    updatePaginationUI("jobs", {
+      prevBtn: ui.jobsPrevBtn,
+      nextBtn: ui.jobsNextBtn,
+      pageInfo: ui.jobsPageInfo,
+    });
+    renderJobs(data.items || []);
+    log(`Loaded ${Array.isArray(data.items) ? data.items.length : 0} jobs.`);
   } catch (error) {
     log(`Job refresh failed: ${error.message}`);
+  }
+}
+
+async function purgeJobs() {
+  try {
+    await apiRequest("/jobs/purge", { method: "POST" });
+    log("Jobs history purged.");
+    await Promise.all([refreshJobs(), loadDashboard()]);
+  } catch (error) {
+    log(`Jobs purge failed: ${error.message}`);
   }
 }
 
 async function loadJobResults(scanId) {
   try {
     const data = await apiRequest(`/jobs/${scanId}/results`, { method: "GET" });
-    ui.selectedResultScanId.textContent = scanId ? `(${scanId})` : "";
+    const job = jobIndex.get(scanId);
+    const hostLabel = job?.hostname
+      ? `${job.hostname}${job.port ? `:${job.port}` : ""}`
+      : "Unknown target";
+    ui.selectedResultScanId.textContent = scanId
+      ? `for ${hostLabel} (JOB ID:${scanId})`
+      : "";
     renderJobResults(data);
     activateView("resultsView");
     log(`Loaded results for job ${scanId}.`);
@@ -691,6 +1054,7 @@ async function refreshAll() {
   await Promise.all([
     loadDashboard(),
     refreshTargets(),
+    refreshSpoofable(),
     refreshJobs(),
     loadProxyConfig(),
   ]);
@@ -698,11 +1062,51 @@ async function refreshAll() {
 
 ui.targetForm.addEventListener("submit", addTarget);
 ui.refreshTargetsBtn.addEventListener("click", refreshTargets);
+ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
+ui.purgeJobsBtn.addEventListener("click", purgeJobs);
 ui.loginForm.addEventListener("submit", login);
 ui.logoutBtn.addEventListener("click", logout);
 ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
+
+ui.targetsPageSize.addEventListener("change", () => {
+  pagination.targets.page = 1;
+  refreshTargets();
+});
+ui.jobsPageSize.addEventListener("change", () => {
+  pagination.jobs.page = 1;
+  refreshJobs();
+});
+ui.spoofablePageSize.addEventListener("change", () => {
+  pagination.spoofable.page = 1;
+  refreshSpoofable();
+});
+
+ui.targetsPrevBtn.addEventListener("click", () => {
+  pagination.targets.page = Math.max(1, pagination.targets.page - 1);
+  refreshTargets();
+});
+ui.targetsNextBtn.addEventListener("click", () => {
+  pagination.targets.page += 1;
+  refreshTargets();
+});
+ui.jobsPrevBtn.addEventListener("click", () => {
+  pagination.jobs.page = Math.max(1, pagination.jobs.page - 1);
+  refreshJobs();
+});
+ui.jobsNextBtn.addEventListener("click", () => {
+  pagination.jobs.page += 1;
+  refreshJobs();
+});
+ui.spoofablePrevBtn.addEventListener("click", () => {
+  pagination.spoofable.page = Math.max(1, pagination.spoofable.page - 1);
+  refreshSpoofable();
+});
+ui.spoofableNextBtn.addEventListener("click", () => {
+  pagination.spoofable.page += 1;
+  refreshSpoofable();
+});
 
 ui.menuItems.forEach((item) => {
   item.addEventListener("click", () => activateView(item.dataset.view));
@@ -712,6 +1116,12 @@ ui.targetsBody.addEventListener("click", (event) => {
   const runBtn = event.target.closest(".run-scan-btn");
   if (runBtn) {
     runScan(runBtn.dataset.targetId);
+    return;
+  }
+
+  const dnsBtn = event.target.closest(".dns-data-btn");
+  if (dnsBtn) {
+    loadDnsData(dnsBtn.dataset.targetId, dnsBtn.dataset.hostname);
     return;
   }
 

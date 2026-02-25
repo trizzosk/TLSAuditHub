@@ -1,23 +1,33 @@
 # TLSAuditHub
-Simple platform for SSL/TLS audits of services. Provides periodical scans with dashboards. More features will follow.
 
-## UI Prototype
-This repo now includes a lightweight frontend prototype in `ui-prototype/` to quickly test dashboard flows against the API.
+## Objective
+TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across services. It focuses on scheduled scans, change tracking, and a clean operator workflow.
 
-### Run
-1. Start all services (including UI): `docker compose up`.
-2. Open `http://localhost:5173`.
+## Functions
+- Authentication via `/auth/token`.
+- Targets inventory with add/delete operations via `/targets`.
+- On-demand scan triggering per target.
+- Jobs view to track scan status and history.
+- Results view for job output details.
+- Spoofable report view to highlight domains with weak SPF/DMARC posture.
+- Admin proxy configuration for outbound scan traffic.
+- UI prototype for exercising the API and dashboards.
 
-Alternative (no UI container):
-1. Start backend only: `docker compose up api worker scheduler postgres redis`
+## Deployment
+The repo ships as a multi-service Docker Compose stack (API, worker, scheduler, Postgres, Redis, UI).
+
+### Run everything (API + workers + UI)
+1. `docker compose up`
+2. Open `http://localhost:5173`
+
+### Run backend only and host the UI locally
+1. `docker compose up api worker scheduler postgres redis`
 2. In another terminal:
    - `cd ui-prototype`
    - `python3 -m http.server 5173`
-3. Open `http://localhost:5173`.
+3. Open `http://localhost:5173`
 
-### What it includes
-- Health check panel
-- Login form (`/auth/token`)
-- Add target form (`/targets`)
-- Targets table (`/targets`)
-- Diff history viewer (`/targets/{target_id}/diffs`)
+## Notes
+- The UI prototype is in `ui-prototype/` and intended for workflow validation.
+- The UI presents only the login form until authenticated.
+- The Spoofable report uses stored DNS data (SPF/DMARC) per target to classify spoofing risk.

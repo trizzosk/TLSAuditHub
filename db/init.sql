@@ -23,6 +23,12 @@ CREATE TABLE scan_results (
     result JSONB
 );
 
+CREATE TABLE target_dns (
+    target_id UUID PRIMARY KEY REFERENCES targets(id),
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username TEXT UNIQUE NOT NULL,

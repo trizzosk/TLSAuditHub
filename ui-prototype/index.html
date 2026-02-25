@@ -17,6 +17,7 @@
       <nav class="menu">
         <button class="menu-item" data-view="dashboardView">Dashboard</button>
         <button class="menu-item" data-view="targetsView">Hosts / Targets</button>
+        <button class="menu-item" data-view="spoofableView">Spoofable</button>
         <button class="menu-item" data-view="jobsView">Jobs</button>
         <button class="menu-item" data-view="resultsView">Results</button>
         <button class="menu-item" data-view="adminView">Admin</button>
@@ -111,6 +112,61 @@
               </tbody>
             </table>
           </div>
+          <div class="table-controls">
+            <label for="targetsPageSize">Rows</label>
+            <select id="targetsPageSize">
+              <option value="10">10</option>
+              <option value="15" selected>15</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="0">All</option>
+            </select>
+            <button id="targetsPrevBtn" type="button">Prev</button>
+            <span id="targetsPageInfo" class="muted">Page 1 of 1</span>
+            <button id="targetsNextBtn" type="button">Next</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>DNS Data</h3>
+          <div id="dnsPanel" class="results-panel muted">Select "DNS Data" from a target row.</div>
+        </section>
+      </section>
+
+      <section id="spoofableView" class="view">
+        <section class="card">
+          <div class="section-header">
+            <h3>Spoofable Domains</h3>
+            <button id="refreshSpoofableBtn" type="button">Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Target / Host</th>
+                  <th>SPF Record</th>
+                  <th>DMARC Policy</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody id="spoofableBody">
+                <tr><td colspan="4" class="muted">No data loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-controls">
+            <label for="spoofablePageSize">Rows</label>
+            <select id="spoofablePageSize">
+              <option value="10">10</option>
+              <option value="15" selected>15</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="0">All</option>
+            </select>
+            <button id="spoofablePrevBtn" type="button">Prev</button>
+            <span id="spoofablePageInfo" class="muted">Page 1 of 1</span>
+            <button id="spoofableNextBtn" type="button">Next</button>
+          </div>
         </section>
       </section>
 
@@ -118,7 +174,10 @@
         <section class="card">
           <div class="section-header">
             <h3>Job Runs</h3>
-            <button id="refreshJobsBtn" type="button">Refresh Jobs</button>
+            <div class="section-actions">
+              <button id="purgeJobsBtn" type="button">Purge Jobs</button>
+              <button id="refreshJobsBtn" type="button">Refresh Jobs</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
@@ -136,6 +195,19 @@
                 <tr><td colspan="6" class="muted">No jobs loaded</td></tr>
               </tbody>
             </table>
+          </div>
+          <div class="table-controls">
+            <label for="jobsPageSize">Rows</label>
+            <select id="jobsPageSize">
+              <option value="10">10</option>
+              <option value="15" selected>15</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="0">All</option>
+            </select>
+            <button id="jobsPrevBtn" type="button">Prev</button>
+            <span id="jobsPageInfo" class="muted">Page 1 of 1</span>
+            <button id="jobsNextBtn" type="button">Next</button>
           </div>
         </section>
       </section>
