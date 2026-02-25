@@ -33,7 +33,10 @@ CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE
+    is_active BOOLEAN DEFAULT TRUE,
+    name TEXT NOT NULL DEFAULT '',
+    surname TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE scan_diffs (

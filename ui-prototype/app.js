@@ -46,6 +46,14 @@ const ui = {
   proxyPassword: document.getElementById("proxyPassword"),
   proxyNoProxyPatterns: document.getElementById("proxyNoProxyPatterns"),
   reloadProxyBtn: document.getElementById("reloadProxyBtn"),
+  refreshUsersBtn: document.getElementById("refreshUsersBtn"),
+  userForm: document.getElementById("userForm"),
+  userUsername: document.getElementById("userUsername"),
+  userPassword: document.getElementById("userPassword"),
+  userName: document.getElementById("userName"),
+  userSurname: document.getElementById("userSurname"),
+  userEmail: document.getElementById("userEmail"),
+  usersBody: document.getElementById("usersBody"),
   logPanel: document.getElementById("logPanel"),
 };
 
@@ -1029,6 +1037,69 @@ async function saveProxyConfig(event) {
   }
 }
 
+function renderUsers(users) {
+  if (!Array.isArray(users) || users.length === 0) {
+    ui.usersBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>No users found</td></tr>";
+    return;
+  }
+
+  ui.usersBody.innerHTML = users
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(row.username || "")}</td>
+        <td>${escapeHtml(row.name || "")}</td>
+        <td>${escapeHtml(row.surname || "")}</td>
+        <td>${escapeHtml(row.email || "")}</td>
+        <td>${row.is_active ? "Active" : "Disabled"}</td>
+      </tr>
+    `
+    )
+    .join("");
+}
+
+async function refreshUsers() {
+  try {
+    const data = await apiRequest("/admin/users", { method: "GET" });
+    renderUsers(data);
+    log(`Loaded ${Array.isArray(data) ? data.length : 0} users.`);
+  } catch (error) {
+    ui.usersBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>Failed to load users</td></tr>";
+    log(`User list load failed: ${error.message}`);
+  }
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const payload = {
+    username: ui.userUsername.value.trim(),
+    password: ui.userPassword.value,
+    name: ui.userName.value.trim(),
+    surname: ui.userSurname.value.trim(),
+    email: ui.userEmail.value.trim(),
+    is_active: true,
+  };
+
+  if (!payload.username || !payload.password) {
+    log("Create user failed: username and password are required.");
+    return;
+  }
+
+  try {
+    await apiRequest("/admin/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    log(`User created: ${payload.username}`);
+    ui.userForm.reset();
+    await refreshUsers();
+  } catch (error) {
+    log(`Create user failed: ${error.message}`);
+  }
+}
+
 async function addTarget(event) {
   event.preventDefault();
   const hostname = ui.hostname.value.trim();
@@ -1056,6 +1127,7 @@ async function refreshAll() {
     refreshTargets(),
     refreshSpoofable(),
     refreshJobs(),
+    refreshUsers(),
     loadProxyConfig(),
   ]);
 }
@@ -1069,6 +1141,8 @@ ui.loginForm.addEventListener("submit", login);
 ui.logoutBtn.addEventListener("click", logout);
 ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
+ui.userForm.addEventListener("submit", createUser);
+ui.refreshUsersBtn.addEventListener("click", refreshUsers);
 
 ui.targetsPageSize.addEventListener("change", () => {
   pagination.targets.page = 1;

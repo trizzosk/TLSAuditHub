@@ -5,7 +5,7 @@ from celery import Celery
 from shared.database import SessionLocal
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from auth import verify_password, create_access_token
+from auth import verify_password, create_access_token, hash_password
 from deps import get_current_user
 
 app = FastAPI(title="SSLyze Scanner API")
@@ -19,6 +19,15 @@ class ProxyConfigUpdate(BaseModel):
     username: str = ""
     password: str = ""
     no_proxy_patterns: str = ""
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    name: str = ""
+    surname: str = ""
+    email: str = ""
+    is_active: bool = True
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,6 +77,19 @@ def ensure_proxy_config_table(db):
     db.commit()
 
 
+def ensure_users_table(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS surname TEXT NOT NULL DEFAULT '',
+            ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT ''
+            """
+        )
+    )
+    db.commit()
+
 def ensure_target_dns_table(db):
     db.execute(
         text(
@@ -111,6 +133,7 @@ def init_proxy_config():
     try:
         ensure_proxy_config_table(db)
         ensure_target_dns_table(db)
+        ensure_users_table(db)
     finally:
         db.close()
 
@@ -314,6 +337,60 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
         token = create_access_token({"sub": user.username})
         return {"access_token": token, "token_type": "bearer"}
+    finally:
+        db.close()
+
+
+@app.get("/admin/users")
+def list_users(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_users_table(db)
+        rows = db.execute(
+            text(
+                """
+                SELECT id, username, name, surname, email, is_active
+                FROM users
+                ORDER BY username ASC
+                """
+            )
+        ).fetchall()
+        return [dict(r._mapping) for r in rows]
+    finally:
+        db.close()
+
+
+@app.post("/admin/users")
+def create_user(payload: UserCreate, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_users_table(db)
+        existing = db.execute(
+            text("SELECT id FROM users WHERE username=:u"),
+            {"u": payload.username},
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="User already exists")
+
+        db.execute(
+            text(
+                """
+                INSERT INTO users
+                (username, password_hash, is_active, name, surname, email)
+                VALUES (:u, :p, :a, :n, :s, :e)
+                """
+            ),
+            {
+                "u": payload.username,
+                "p": hash_password(payload.password),
+                "a": bool(payload.is_active),
+                "n": payload.name.strip(),
+                "s": payload.surname.strip(),
+                "e": payload.email.strip(),
+            },
+        )
+        db.commit()
+        return {"status": "created"}
     finally:
         db.close()
 

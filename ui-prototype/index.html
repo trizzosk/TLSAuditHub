@@ -222,6 +222,54 @@
       <section id="adminView" class="view">
         <section class="card">
           <div class="section-header">
+            <h3>User Management</h3>
+            <button id="refreshUsersBtn" type="button">Refresh Users</button>
+          </div>
+          <form id="userForm" class="proxy-form">
+            <div class="proxy-grid">
+              <div class="form-field">
+                <label for="userUsername">Username</label>
+                <input id="userUsername" type="text" placeholder="username" required>
+              </div>
+              <div class="form-field">
+                <label for="userPassword">Password</label>
+                <input id="userPassword" type="password" placeholder="temporary password" required>
+              </div>
+              <div class="form-field">
+                <label for="userName">Name</label>
+                <input id="userName" type="text" placeholder="First name">
+              </div>
+              <div class="form-field">
+                <label for="userSurname">Surname</label>
+                <input id="userSurname" type="text" placeholder="Last name">
+              </div>
+              <div class="form-field">
+                <label for="userEmail">Email</label>
+                <input id="userEmail" type="email" placeholder="user@company.com">
+              </div>
+            </div>
+            <button type="submit" id="createUserBtn">Create User</button>
+          </form>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Name</th>
+                  <th>Surname</th>
+                  <th>Email</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="usersBody">
+                <tr><td colspan="5" class="muted">No users loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
             <h3>Proxy Configuration</h3>
             <button id="reloadProxyBtn" type="button">Reload Proxy Config</button>
           </div>

@@ -17,6 +17,15 @@ TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across servic
 ## Deployment
 The repo ships as a multi-service Docker Compose stack (API, worker, scheduler, Postgres, Redis, UI).
 
+### Corporate proxy support
+If your network requires an outbound HTTP proxy, set the standard proxy environment variables before running Docker Compose. The containers will pass these through for `pip install` during startup.
+
+1. Add these to `.env` (or export them in your shell):
+   - `HTTP_PROXY=http://proxy.company.local:8080`
+   - `HTTPS_PROXY=http://proxy.company.local:8080`
+   - `NO_PROXY=localhost,127.0.0.1,postgres,redis`
+2. Run `docker compose up`.
+
 ### Run everything (API + workers + UI)
 1. `docker compose up`
 2. Open `http://localhost:5173`

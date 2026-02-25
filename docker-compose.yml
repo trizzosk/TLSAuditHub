@@ -17,6 +17,10 @@ services:
     container_name: sslyze-api
     env_file:
     - .env
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
     volumes:
       - ./api:/app
       - ./app:/app/shared
@@ -33,6 +37,10 @@ services:
   worker:
     image: python:3.12-slim
     container_name: sslyze-worker
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
     volumes:
       - ./worker:/app
       - ./app:/app/shared
@@ -47,6 +55,10 @@ services:
   scheduler:
     image: python:3.12-slim
     container_name: sslyze-scheduler
+    environment:
+      HTTP_PROXY: ${HTTP_PROXY}
+      HTTPS_PROXY: ${HTTPS_PROXY}
+      NO_PROXY: ${NO_PROXY}
     volumes:
       - ./worker:/app
       - ./app:/app/shared
