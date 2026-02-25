@@ -59,6 +59,7 @@ function setAuthState(authenticated, label = "") {
 }
 
 function setAuthenticatedUI(authenticated) {
+  document.body.classList.toggle("unauth", !authenticated);
   ui.logoutBtn.classList.toggle("hidden", !authenticated);
   ui.authState.classList.toggle("hidden", !authenticated);
   ui.menuItems.forEach((item) => {

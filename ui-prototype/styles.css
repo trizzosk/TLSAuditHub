@@ -30,6 +30,19 @@ body {
   min-height: 100vh;
 }
 
+body.unauth .app-layout {
+  grid-template-columns: 1fr;
+}
+
+body.unauth .sidebar,
+body.unauth .topbar {
+  display: none;
+}
+
+body.unauth .main-panel {
+  padding: 32px 18px 48px;
+}
+
 .sidebar {
   background: linear-gradient(180deg, #0b1118, #0a0f15);
   border-right: 1px solid #223244;
