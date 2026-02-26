@@ -103,12 +103,13 @@ const SESSION_TOKEN_KEY = "tlsaudithub_access_token";
 const SESSION_USER_KEY = "tlsaudithub_username";
 
 const pagination = {
-  targets: { page: 1, pageSize: 15, total: 0 },
-  jobs: { page: 1, pageSize: 15, total: 0 },
-  spoofable: { page: 1, pageSize: 15, total: 0 },
-  eventLogs: { page: 1, pageSize: 25, total: 0 },
+  targets: { page: 1, pageSize: 10, total: 0 },
+  jobs: { page: 1, pageSize: 10, total: 0 },
+  spoofable: { page: 1, pageSize: 10, total: 0 },
+  eventLogs: { page: 1, pageSize: 10, total: 0 },
 };
 let activeAdminPage = "adminUsersPage";
+const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
 function baseUrl() {
   return "http://localhost:8000";
@@ -141,11 +142,10 @@ function log(message, options = {}) {
 function setAuthState(authenticated, label = "") {
   if (authenticated) {
     ui.authState.textContent = label || "Authenticated";
-    ui.authState.style.color = "#88dc8f";
   } else {
     ui.authState.textContent = label || "Not authenticated";
-    ui.authState.style.color = "";
   }
+  ui.authState.classList.toggle("auth-state-authenticated", authenticated);
 }
 
 function setAuthenticatedUI(authenticated) {
@@ -154,7 +154,20 @@ function setAuthenticatedUI(authenticated) {
   ui.authState.classList.toggle("hidden", !authenticated);
   ui.menuItems.forEach((item) => {
     item.disabled = !authenticated;
+    item.setAttribute("aria-disabled", String(!authenticated));
   });
+}
+
+function isMobileAdminLayout() {
+  return window.matchMedia(MOBILE_ADMIN_NAV_QUERY).matches;
+}
+
+function updateAdminNavToggleState() {
+  if (!ui.adminShell || !ui.adminNavToggleBtn) {
+    return;
+  }
+  const collapsed = ui.adminShell.classList.contains("admin-nav-collapsed");
+  ui.adminNavToggleBtn.setAttribute("aria-expanded", String(!collapsed));
 }
 
 function persistSession(token, username) {
@@ -272,7 +285,13 @@ function activateView(viewId) {
   });
 
   ui.menuItems.forEach((item) => {
-    item.classList.toggle("active", item.dataset.view === viewId);
+    const isActive = item.dataset.view === viewId;
+    item.classList.toggle("active", isActive);
+    if (isActive) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
   });
 
   ui.viewTitle.textContent = viewNames[viewId] || "Dashboard";
@@ -300,10 +319,13 @@ function activateAdminPage(pageId) {
     page.classList.toggle("active", page.id === resolvedPageId);
   });
   ui.adminNavItems.forEach((item) => {
-    item.classList.toggle(
-      "active",
-      item.dataset.adminPage === resolvedPageId
-    );
+    const isActive = item.dataset.adminPage === resolvedPageId;
+    item.classList.toggle("active", isActive);
+    if (isActive) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
   });
 
   const activeNav = Array.from(ui.adminNavItems).find(
@@ -315,8 +337,9 @@ function activateAdminPage(pageId) {
       : "Admin";
   }
 
-  if (ui.adminShell && window.matchMedia("(max-width: 980px)").matches) {
+  if (ui.adminShell && isMobileAdminLayout()) {
     ui.adminShell.classList.add("admin-nav-collapsed");
+    updateAdminNavToggleState();
   }
 
   if (resolvedPageId === "adminLogPage") {
@@ -343,7 +366,7 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getPageSize(node, fallback = 15) {
+function getPageSize(node, fallback = 10) {
   const value = Number(node?.value);
   if (!Number.isFinite(value)) {
     return fallback;
@@ -858,21 +881,26 @@ function renderTargets(targets) {
 
   ui.targetsBody.innerHTML = targets
     .map(
-      (target) => `
+      (target) => {
+        const targetId = escapeHtml(String(target.id || ""));
+        const hostname = escapeHtml(String(target.hostname || "unknown host"));
+        const hostnameRaw = escapeHtml(String(target.hostname || ""));
+        return `
       <tr>
-        <td>${target.hostname ?? ""}</td>
+        <td>${hostnameRaw}</td>
         <td>${target.port ?? ""}</td>
         <td>${target.enabled ? "Yes" : "No"}</td>
         <td>${target.scan_interval_minutes ?? "-"}</td>
         <td>
           <div class="target-actions">
-            <button data-target-id="${target.id}" class="run-scan-btn">Run Scan</button>
-            <button data-target-id="${target.id}" data-hostname="${target.hostname ?? ""}" class="dns-data-btn">DNS Data</button>
-            <button data-target-id="${target.id}" class="delete-target-btn">Delete</button>
+            <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="Run scan for ${hostname}">Run Scan</button>
+            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" class="dns-data-btn btn btn-sm btn-outline-secondary" aria-label="View DNS data for ${hostname}" title="View DNS data for ${hostname}">DNS Data</button>
+            <button data-target-id="${targetId}" class="delete-target-btn btn btn-sm btn-outline-danger" aria-label="Delete target ${hostname}" title="Delete target ${hostname}">Delete</button>
           </div>
         </td>
       </tr>
-    `
+    `;
+      }
     )
     .join("");
 }
@@ -1030,16 +1058,22 @@ function renderJobs(jobs) {
 
   ui.jobsBody.innerHTML = jobs
     .map(
-      (job) => `
+      (job) => {
+        const jobId = escapeHtml(String(job.id || ""));
+        const hostLabel = escapeHtml(
+          `${job.hostname ?? "Unknown"}:${job.port ?? "-"}`
+        );
+        return `
       <tr>
-        <td>${job.id ?? ""}</td>
-        <td>${job.hostname ?? "Unknown"}:${job.port ?? "-"}</td>
+        <td>${jobId}</td>
+        <td>${hostLabel}</td>
         <td>${job.status ?? "-"}</td>
         <td>${fmtDate(job.started_at)}</td>
         <td>${fmtDate(job.finished_at)}</td>
-        <td><button data-scan-id="${job.id}" class="view-job-btn">Results</button></td>
+        <td><button data-scan-id="${jobId}" class="view-job-btn btn btn-sm btn-outline-primary" aria-label="View results for job ${jobId} on ${hostLabel}" title="View results for ${hostLabel}">Results</button></td>
       </tr>
-    `
+    `;
+      }
     )
     .join("");
 }
@@ -1193,10 +1227,10 @@ async function exportSpoofablePdf() {
   <table>
     <thead>
       <tr>
-        <th>Target / Host</th>
-        <th>SPF Record</th>
-        <th>DMARC Policy</th>
-        <th>Result</th>
+        <th scope="col">Target / Host</th>
+        <th scope="col">SPF Record</th>
+        <th scope="col">DMARC Policy</th>
+        <th scope="col">Result</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
@@ -1224,7 +1258,7 @@ async function exportSpoofablePdf() {
 
 async function refreshSpoofable() {
   try {
-    pagination.spoofable.pageSize = getPageSize(ui.spoofablePageSize, 15);
+    pagination.spoofable.pageSize = getPageSize(ui.spoofablePageSize, 10);
     const limit = pagination.spoofable.pageSize;
     const offset =
       limit > 0 ? (pagination.spoofable.page - 1) * limit : 0;
@@ -1254,7 +1288,7 @@ async function refreshSpoofable() {
 
 async function refreshTargets() {
   try {
-    pagination.targets.pageSize = getPageSize(ui.targetsPageSize, 15);
+    pagination.targets.pageSize = getPageSize(ui.targetsPageSize, 10);
     const limit = pagination.targets.pageSize;
     const offset =
       limit > 0 ? (pagination.targets.page - 1) * limit : 0;
@@ -1304,7 +1338,7 @@ async function runScan(targetId) {
 
 async function refreshJobs() {
   try {
-    pagination.jobs.pageSize = getPageSize(ui.jobsPageSize, 15);
+    pagination.jobs.pageSize = getPageSize(ui.jobsPageSize, 10);
     const limit = pagination.jobs.pageSize;
     const offset =
       limit > 0 ? (pagination.jobs.page - 1) * limit : 0;
@@ -1596,14 +1630,14 @@ function renderUsers(users) {
         <td>${escapeHtml(row.email || "")}</td>
         <td>${row.is_active ? "Active" : "Disabled"}</td>
         <td class="users-actions">
-          <button type="button" class="edit-user-btn" data-user-id="${escapeHtml(
+          <button type="button" class="edit-user-btn btn btn-sm btn-outline-primary" data-user-id="${escapeHtml(
             userId
-          )}">Edit</button>
+          )}" aria-label="Edit user ${escapeHtml(username)}" title="Edit user ${escapeHtml(username)}">Edit</button>
           ${
             canDelete
-              ? `<button type="button" class="delete-user-btn" data-user-id="${escapeHtml(
+              ? `<button type="button" class="delete-user-btn btn btn-sm btn-outline-danger" data-user-id="${escapeHtml(
                   userId
-                )}" data-username="${escapeHtml(username)}">Delete</button>`
+                )}" data-username="${escapeHtml(username)}" aria-label="Delete user ${escapeHtml(username)}" title="Delete user ${escapeHtml(username)}">Delete</button>`
               : "<span class='muted'>Current user</span>"
           }
         </td>
@@ -1658,7 +1692,7 @@ function renderEventLogs(rows) {
 
 async function refreshEventLogs() {
   try {
-    pagination.eventLogs.pageSize = getPageSize(ui.eventLogPageSize, 25);
+    pagination.eventLogs.pageSize = getPageSize(ui.eventLogPageSize, 10);
     const limit = pagination.eventLogs.pageSize;
     const offset =
       limit > 0 ? (pagination.eventLogs.page - 1) * limit : 0;
@@ -1866,6 +1900,18 @@ ui.adminNavItems.forEach((item) => {
 });
 ui.adminNavToggleBtn.addEventListener("click", () => {
   ui.adminShell.classList.toggle("admin-nav-collapsed");
+  updateAdminNavToggleState();
+});
+window.matchMedia(MOBILE_ADMIN_NAV_QUERY).addEventListener("change", (event) => {
+  if (!ui.adminShell) {
+    return;
+  }
+  if (event.matches) {
+    ui.adminShell.classList.add("admin-nav-collapsed");
+  } else {
+    ui.adminShell.classList.remove("admin-nav-collapsed");
+  }
+  updateAdminNavToggleState();
 });
 ui.usersBody.addEventListener("click", (event) => {
   const editBtn = event.target.closest(".edit-user-btn");
@@ -1964,6 +2010,10 @@ ui.jobsBody.addEventListener("click", (event) => {
 
 const persisted = loadPersistedSession();
 setToken(persisted.token, persisted.username);
+if (ui.adminShell && isMobileAdminLayout()) {
+  ui.adminShell.classList.add("admin-nav-collapsed");
+}
+updateAdminNavToggleState();
 if (persisted.token) {
   refreshAll();
 }
