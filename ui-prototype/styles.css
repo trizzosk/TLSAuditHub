@@ -49,15 +49,26 @@ body.unauth .main-panel {
   padding: 18px 14px;
 }
 
-.brand h1 {
-  margin: 0;
-  font-size: 1.4rem;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
-.brand p {
-  margin: 6px 0 18px;
-  color: var(--muted);
-  font-size: 0.88rem;
+.brand-logo {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+}
+
+.brand-text {
+  min-width: 0;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.55rem;
 }
 
 .menu {
@@ -145,8 +156,36 @@ body.unauth .main-panel {
 }
 
 .auth-card {
-  max-width: 460px;
+  max-width: 680px;
   margin: 8vh auto 0;
+}
+
+.auth-card-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 12px;
+  min-height: 220px;
+}
+
+.auth-logo-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgba(157, 179, 199, 0.2);
+  padding: 8px;
+}
+
+.auth-logo {
+  width: auto;
+  height: 100%;
+  max-height: 180px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.auth-form-wrap h3 {
+  margin-top: 0;
 }
 
 .auth-view-form {
@@ -654,6 +693,21 @@ pre {
     flex-direction: column;
     align-items: stretch;
     width: 100%;
+  }
+
+  .auth-card-layout {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+
+  .auth-logo-wrap {
+    border-right: 0;
+    border-bottom: 1px solid rgba(157, 179, 199, 0.2);
+    padding-bottom: 12px;
+  }
+
+  .auth-logo {
+    max-height: 120px;
   }
 
   .auth-form input,

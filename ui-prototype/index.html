@@ -10,8 +10,10 @@
   <div class="app-layout">
     <aside class="sidebar">
       <div class="brand">
-        <h1>TLSAuditHub</h1>
-        <p>TLS monitoring console</p>
+        <img class="brand-logo" src="./logo.svg" alt="TLSAuditHub logo">
+        <div class="brand-text">
+          <h1>TLSAuditHub</h1>
+        </div>
       </div>
 
       <nav class="menu">
@@ -35,14 +37,21 @@
 
       <section id="authView" class="view active">
         <section class="card auth-card">
-          <h3>Login</h3>
-          <form id="loginForm" class="auth-view-form">
-            <label for="authUsername">Username</label>
-            <input id="authUsername" type="text" placeholder="username" required>
-            <label for="authPassword">Password</label>
-            <input id="authPassword" type="password" placeholder="password" required>
-            <button id="loginBtn" type="submit">Login</button>
-          </form>
+          <div class="auth-card-layout">
+            <div class="auth-logo-wrap">
+              <img class="auth-logo" src="./logo.svg" alt="TLSAuditHub logo">
+            </div>
+            <div class="auth-form-wrap">
+              <h3>Login</h3>
+              <form id="loginForm" class="auth-view-form">
+                <label for="authUsername">Username</label>
+                <input id="authUsername" type="text" placeholder="username" required>
+                <label for="authPassword">Password</label>
+                <input id="authPassword" type="password" placeholder="password" required>
+                <button id="loginBtn" type="submit">Login</button>
+              </form>
+            </div>
+          </div>
         </section>
       </section>
 

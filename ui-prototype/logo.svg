@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">TLSAuditHub Logo</title>
+  <desc id="desc">Shield with lock and radar rings</desc>
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#59c3ff"/>
+      <stop offset="100%" stop-color="#2f91d2"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" fill="#0f1a24"/>
+  <circle cx="64" cy="64" r="38" fill="none" stroke="#2a3d50" stroke-width="4"/>
+  <circle cx="64" cy="64" r="26" fill="none" stroke="#2a3d50" stroke-width="3"/>
+  <path d="M64 20 94 32v26c0 24-17 41-30 48-13-7-30-24-30-48V32l30-12Z" fill="url(#g1)" stroke="#9bdcff" stroke-width="2"/>
+  <rect x="53" y="56" width="22" height="18" rx="3" fill="#0d2232" stroke="#9bdcff" stroke-width="2"/>
+  <path d="M58 56v-6a6 6 0 1 1 12 0v6" fill="none" stroke="#9bdcff" stroke-width="2"/>
+  <circle cx="64" cy="65" r="2.4" fill="#9bdcff"/>
+  <path d="M64 67.5v4.5" stroke="#9bdcff" stroke-width="2" stroke-linecap="round"/>
+</svg>

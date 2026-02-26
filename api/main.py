@@ -10,6 +10,7 @@ from deps import get_current_admin, get_current_user
 import csv
 import os
 import time
+from uuid import UUID
 from io import StringIO
 
 app = FastAPI(title="SSLyze Scanner API")
@@ -538,7 +539,7 @@ def list_targets(
 
 
 @app.get("/targets/{target_id}/dns")
-def get_target_dns(target_id: str, user=Depends(get_current_user)):
+def get_target_dns(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         ensure_target_dns_table(db)
@@ -553,7 +554,9 @@ def get_target_dns(target_id: str, user=Depends(get_current_user)):
             {"tid": target_id},
         ).fetchone()
         if not row:
-            celery_client.send_task("worker.run_dns_lookup", args=[target_id])
+            celery_client.send_task(
+                "worker.run_dns_lookup", args=[str(target_id)]
+            )
             return {"status": "pending", "data": {}, "updated_at": None}
         data = dict(row._mapping)
         return {
@@ -621,7 +624,7 @@ def list_spoofable_targets(
 
 
 @app.delete("/targets/{target_id}")
-def remove_target(target_id: str, user=Depends(get_current_user)):
+def remove_target(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         target = db.execute(
@@ -638,13 +641,13 @@ def remove_target(target_id: str, user=Depends(get_current_user)):
         db.execute(text("DELETE FROM scans WHERE target_id=:tid"), {"tid": target_id})
         db.execute(text("DELETE FROM targets WHERE id=:tid"), {"tid": target_id})
         db.commit()
-        return {"status": "deleted", "target_id": target_id}
+        return {"status": "deleted", "target_id": str(target_id)}
     finally:
         db.close()
 
 
 @app.post("/targets/{target_id}/scan")
-def run_target_scan(target_id: str, user=Depends(get_current_user)):
+def run_target_scan(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         target = db.execute(
@@ -655,8 +658,12 @@ def run_target_scan(target_id: str, user=Depends(get_current_user)):
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        task = celery_client.send_task("worker.run_scan", args=[target_id])
-        return {"status": "queued", "target_id": target_id, "task_id": task.id}
+        task = celery_client.send_task("worker.run_scan", args=[str(target_id)])
+        return {
+            "status": "queued",
+            "target_id": str(target_id),
+            "task_id": task.id,
+        }
     finally:
         db.close()
 
@@ -804,7 +811,7 @@ def create_user(payload: UserCreate, user=Depends(get_current_admin)):
 
 @app.put("/admin/users/{user_id}")
 def update_user(
-    user_id: str, payload: UserUpdate, user=Depends(get_current_admin)
+    user_id: UUID, payload: UserUpdate, user=Depends(get_current_admin)
 ):
     db = SessionLocal()
     try:
@@ -836,7 +843,7 @@ def update_user(
             },
         )
         db.commit()
-        return {"status": "updated", "user_id": user_id}
+        return {"status": "updated", "user_id": str(user_id)}
     finally:
         db.close()
 
@@ -919,7 +926,7 @@ async def import_targets_csv(
 
 
 @app.delete("/admin/users/{user_id}")
-def delete_user(user_id: str, user=Depends(get_current_admin)):
+def delete_user(user_id: UUID, user=Depends(get_current_admin)):
     db = SessionLocal()
     try:
         ensure_users_table(db)
@@ -943,7 +950,7 @@ def delete_user(user_id: str, user=Depends(get_current_admin)):
             {"id": user_id},
         )
         db.commit()
-        return {"status": "deleted", "user_id": user_id}
+        return {"status": "deleted", "user_id": str(user_id)}
     finally:
         db.close()
 
@@ -1241,7 +1248,7 @@ def admin_purge_targets(user=Depends(get_current_admin)):
 
 
 @app.get("/jobs/{scan_id}/results")
-def job_results(scan_id: str, user=Depends(get_current_user)):
+def job_results(scan_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -1253,7 +1260,7 @@ def job_results(scan_id: str, user=Depends(get_current_user)):
                 ORDER BY plugin ASC
                 """
             ),
-            {"sid": scan_id},
+            {"sid": str(scan_id)},
         ).fetchall()
         return [dict(r._mapping) for r in rows]
     finally:
@@ -1261,7 +1268,7 @@ def job_results(scan_id: str, user=Depends(get_current_user)):
 
 
 @app.get("/targets/{target_id}/diffs")
-def get_diffs(target_id: str, user=Depends(get_current_user)):
+def get_diffs(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         rows = db.execute(
@@ -1271,7 +1278,7 @@ def get_diffs(target_id: str, user=Depends(get_current_user)):
                 WHERE target_id=:tid
                 ORDER BY created_at DESC
             """),
-            {"tid": target_id},
+            {"tid": str(target_id)},
         ).fetchall()
         return [dict(r._mapping) for r in rows]
     finally:
