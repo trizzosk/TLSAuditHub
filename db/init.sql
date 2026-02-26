@@ -34,6 +34,7 @@ CREATE TABLE users (
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
+    is_admin BOOLEAN DEFAULT FALSE,
     name TEXT NOT NULL DEFAULT '',
     surname TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT ''
@@ -101,13 +102,15 @@ VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
 ON CONFLICT (id)
 DO NOTHING;
 
-INSERT INTO users (username, password_hash, is_active)
+INSERT INTO users (username, password_hash, is_active, is_admin)
 VALUES (
-    'trizzo',
-    '$pbkdf2-sha256$29000$BqD0HuOcM4ZQijGGUKo1Jg$G79aYyJO4xeZXrb28Wfe28g9rTcbSJzM1/HYCF4nG64',
+    'Adm$n',
+    '$pbkdf2-sha256$29000$N4YQQmit1boXIiQkJMR4Lw$IaSMW5l8kslxxsLXQeQsTcoixpAgvnLq.aB3zx/9RW4',
+    TRUE,
     TRUE
 )
 ON CONFLICT (username)
 DO UPDATE SET
     password_hash = EXCLUDED.password_hash,
-    is_active = TRUE;
+    is_active = TRUE,
+    is_admin = TRUE;

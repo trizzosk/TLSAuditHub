@@ -1,9 +1,6 @@
 from datetime import datetime, timedelta
-from jose import jwt, JWTError
-from passlib.context import CryptContext
 import os
-from datetime import datetime, timedelta
-from jose import jwt
+from jose import jwt, JWTError
 from passlib.context import CryptContext
 
 
@@ -24,6 +21,14 @@ pwd_context = CryptContext(
     schemes=["pbkdf2_sha256", "bcrypt"],
     deprecated="auto",
 )
+
+if (
+    os.environ.get("APP_ENV", "").lower() in {"prod", "production"}
+    and SECRET_KEY in {"CHANGE_ME", "changeme", "default", "secret"}
+):
+    raise RuntimeError(
+        "JWT_SECRET_KEY is weak in production; set a strong random secret."
+    )
 
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)

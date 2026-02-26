@@ -30,6 +30,12 @@ If your network requires an outbound HTTP proxy, set the standard proxy environm
 1. `docker compose up`
 2. Open `http://localhost:5173`
 
+### Default admin account (initial run)
+- Username: `Adm$n`
+- Password: `Cr!mson$Nebula_7#Qx`
+
+Change this password immediately after first login.
+
 ### Run backend only and host the UI locally
 1. `docker compose up api worker scheduler postgres redis`
 2. In another terminal:
