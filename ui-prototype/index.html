@@ -4,52 +4,63 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TLSAuditHub UI Prototype</title>
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet"
+    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+    crossorigin="anonymous"
+  >
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#mainPanel">Skip to main content</a>
   <div class="app-layout">
     <aside class="sidebar">
       <div class="brand">
         <img class="brand-logo" src="./logo.svg" alt="TLSAuditHub logo">
         <div class="brand-text">
-          <h1>TLSAuditHub</h1>
+          <h1 class="h4 mb-0">TLSAuditHub</h1>
         </div>
       </div>
 
-      <nav class="menu">
-        <button class="menu-item" data-view="dashboardView">Dashboard</button>
-        <button class="menu-item" data-view="targetsView">Hosts / Targets</button>
-        <button class="menu-item" data-view="spoofableView">Spoofable</button>
-        <button class="menu-item" data-view="jobsView">Jobs</button>
-        <button class="menu-item" data-view="resultsView">Results</button>
-        <button class="menu-item" data-view="adminView">Admin</button>
+      <nav class="menu" aria-label="Main menu">
+        <button class="menu-item btn" data-view="dashboardView" type="button">Dashboard</button>
+        <button class="menu-item btn" data-view="targetsView" type="button">Hosts / Targets</button>
+        <button class="menu-item btn" data-view="spoofableView" type="button">Spoofable</button>
+        <button class="menu-item btn" data-view="jobsView" type="button">Jobs</button>
+        <button class="menu-item btn" data-view="resultsView" type="button">Results</button>
+        <button class="menu-item btn" data-view="adminView" type="button">Admin</button>
       </nav>
     </aside>
 
-    <main class="main-panel">
-      <header class="topbar">
-        <h2 id="viewTitle">Login</h2>
-        <div class="topbar-actions">
-          <button id="logoutBtn" type="button" class="ghost-btn">Logout</button>
-          <span id="authState" class="auth-state">Not authenticated</span>
+    <main id="mainPanel" class="main-panel" tabindex="-1">
+      <header class="topbar card shadow-sm">
+        <div class="card-body d-flex justify-content-between align-items-center gap-2 py-2">
+          <h2 id="viewTitle" class="h5 mb-0">Login</h2>
+          <div class="topbar-actions">
+            <button id="logoutBtn" type="button" class="ghost-btn btn btn-sm">Logout</button>
+            <span id="authState" class="auth-state" role="status" aria-live="polite">Not authenticated</span>
+          </div>
         </div>
       </header>
 
       <section id="authView" class="view active">
-        <section class="card auth-card">
-          <div class="auth-card-layout">
-            <div class="auth-logo-wrap">
-              <img class="auth-logo" src="./logo.svg" alt="TLSAuditHub logo">
-            </div>
-            <div class="auth-form-wrap">
-              <h3>Login</h3>
-              <form id="loginForm" class="auth-view-form">
-                <label for="authUsername">Username</label>
-                <input id="authUsername" type="text" placeholder="username" required>
-                <label for="authPassword">Password</label>
-                <input id="authPassword" type="password" placeholder="password" required>
-                <button id="loginBtn" type="submit">Login</button>
-              </form>
+        <section class="card auth-card shadow-sm">
+          <div class="card-body p-0">
+            <div class="auth-card-layout">
+              <div class="auth-logo-wrap">
+                <img class="auth-logo" src="./logo.svg" alt="TLSAuditHub logo">
+              </div>
+              <div class="auth-form-wrap p-4">
+                <h3 class="h5">Login</h3>
+                <form id="loginForm" class="auth-view-form">
+                  <label for="authUsername" class="form-label">Username</label>
+                  <input id="authUsername" class="form-control" type="text" placeholder="username" required>
+                  <label for="authPassword" class="form-label">Password</label>
+                  <input id="authPassword" class="form-control" type="password" placeholder="password" required>
+                  <button id="loginBtn" class="btn btn-primary mt-2" type="submit">Login</button>
+                </form>
+              </div>
             </div>
           </div>
         </section>
@@ -57,457 +68,463 @@
 
       <section id="dashboardView" class="view">
         <div class="cards-grid">
-          <article class="metric-card">
-            <h3>Total Hosts</h3>
-            <p id="metricHostsTotal">0</p>
-          </article>
-          <article class="metric-card">
-            <h3>Enabled Hosts</h3>
-            <p id="metricHostsEnabled">0</p>
-          </article>
-          <article class="metric-card">
-            <h3>Scans Recorded</h3>
-            <p id="metricScansTotal">0</p>
-          </article>
-          <article class="metric-card">
-            <h3>Running Scans</h3>
-            <p id="metricScansRunning">0</p>
-          </article>
-          <article class="metric-card">
-            <h3>Scan Results</h3>
-            <p id="metricResultsTotal">0</p>
-          </article>
-          <article class="metric-card">
-            <h3>Diff Events</h3>
-            <p id="metricDiffsTotal">0</p>
-          </article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Total Hosts</h3><p id="metricHostsTotal">0</p></div></article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Enabled Hosts</h3><p id="metricHostsEnabled">0</p></div></article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Scans Recorded</h3><p id="metricScansTotal">0</p></div></article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Running Scans</h3><p id="metricScansRunning">0</p></div></article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Scan Results</h3><p id="metricResultsTotal">0</p></div></article>
+          <article class="metric-card card shadow-sm"><div class="card-body"><h3>Diff Events</h3><p id="metricDiffsTotal">0</p></div></article>
         </div>
       </section>
 
       <section id="targetsView" class="view">
-        <section class="card">
-          <h3>Add Host</h3>
-          <form id="targetForm" class="inline-form">
-            <div class="form-field">
-              <label for="hostname">Hostname</label>
-              <input id="hostname" type="text" placeholder="example.com" required>
-            </div>
-            <div class="form-field">
-              <label for="port">Port</label>
-              <input id="port" type="number" min="1" max="65535" value="443" required>
-            </div>
-            <button type="submit">Add Target</button>
-          </form>
-        </section>
-
-        <section class="card">
-          <div class="section-header">
-            <h3>Target Inventory</h3>
-            <button id="refreshTargetsBtn" type="button">Refresh Targets</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Hostname</th>
-                  <th>Port</th>
-                  <th>Enabled</th>
-                  <th>Scan Interval (min)</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="targetsBody">
-                <tr><td colspan="5" class="muted">No data loaded</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-controls">
-            <label for="targetsPageSize">Rows</label>
-            <select id="targetsPageSize">
-              <option value="10">10</option>
-              <option value="15" selected>15</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="0">All</option>
-            </select>
-            <button id="targetsPrevBtn" type="button">Prev</button>
-            <span id="targetsPageInfo" class="muted">Page 1 of 1</span>
-            <button id="targetsNextBtn" type="button">Next</button>
+        <section class="card shadow-sm mb-3">
+          <div class="card-body">
+            <h3 class="h5">Add Host</h3>
+            <form id="targetForm" class="inline-form">
+              <div class="form-field">
+                <label for="hostname" class="form-label">Hostname</label>
+                <input id="hostname" class="form-control" type="text" placeholder="example.com" required>
+              </div>
+              <div class="form-field">
+                <label for="port" class="form-label">Port</label>
+                <input id="port" class="form-control" type="number" min="1" max="65535" value="443" required>
+              </div>
+              <button class="btn btn-primary" type="submit">Add Target</button>
+            </form>
           </div>
         </section>
 
-        <section class="card">
-          <h3>DNS Data</h3>
-          <div id="dnsPanel" class="results-panel muted">Select "DNS Data" from a target row.</div>
+        <section class="card shadow-sm mb-3">
+          <div class="card-body">
+            <div class="section-header">
+              <h3 class="h5 mb-0">Target Inventory</h3>
+              <button id="refreshTargetsBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Targets</button>
+            </div>
+            <div class="table-wrap mt-3">
+              <table class="table table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th scope="col">Hostname</th>
+                    <th scope="col">Port</th>
+                    <th scope="col">Enabled</th>
+                    <th scope="col">Scan Interval (min)</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="targetsBody">
+                  <tr><td colspan="5" class="muted">No data loaded</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-controls">
+              <label for="targetsPageSize">Rows</label>
+              <select id="targetsPageSize" class="form-select form-select-sm">
+                <option value="10" selected>10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="0">All</option>
+              </select>
+              <button id="targetsPrevBtn" class="btn btn-outline-secondary btn-sm" type="button">Prev</button>
+              <span id="targetsPageInfo" class="muted">Page 1 of 1</span>
+              <button id="targetsNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card shadow-sm">
+          <div class="card-body">
+            <h3 class="h5">DNS Data</h3>
+            <div id="dnsPanel" class="results-panel muted">Select "DNS Data" from a target row.</div>
+          </div>
         </section>
       </section>
 
       <section id="spoofableView" class="view">
-        <section class="card">
-          <div class="section-header">
-            <h3>Spoofable Domains</h3>
-            <div class="section-actions">
-              <button id="exportSpoofableCsvBtn" type="button">Export CSV</button>
-              <button id="exportSpoofablePdfBtn" type="button">Export PDF (A4)</button>
-              <button id="refreshSpoofableBtn" type="button">Refresh</button>
+        <section class="card shadow-sm">
+          <div class="card-body">
+            <div class="section-header">
+              <h3 class="h5 mb-0">Spoofable Domains</h3>
+              <div class="section-actions">
+                <button id="exportSpoofableCsvBtn" class="btn btn-outline-secondary btn-sm" type="button">Export CSV</button>
+                <button id="exportSpoofablePdfBtn" class="btn btn-outline-secondary btn-sm" type="button">Export PDF (A4)</button>
+                <button id="refreshSpoofableBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh</button>
+              </div>
             </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Target / Host</th>
-                  <th>SPF Record</th>
-                  <th>DMARC Policy</th>
-                  <th>Result</th>
-                </tr>
-              </thead>
-              <tbody id="spoofableBody">
-                <tr><td colspan="4" class="muted">No data loaded</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-controls">
-            <label for="spoofablePageSize">Rows</label>
-            <select id="spoofablePageSize">
-              <option value="10">10</option>
-              <option value="15" selected>15</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="0">All</option>
-            </select>
-            <button id="spoofablePrevBtn" type="button">Prev</button>
-            <span id="spoofablePageInfo" class="muted">Page 1 of 1</span>
-            <button id="spoofableNextBtn" type="button">Next</button>
+            <div class="table-wrap mt-3">
+              <table id="spoofableTable" class="table table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th scope="col">Target / Host</th>
+                    <th scope="col">SPF Record</th>
+                    <th scope="col">DMARC Policy</th>
+                    <th scope="col">Result</th>
+                  </tr>
+                </thead>
+                <tbody id="spoofableBody">
+                  <tr><td colspan="4" class="muted">No data loaded</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-controls">
+              <label for="spoofablePageSize">Rows</label>
+              <select id="spoofablePageSize" class="form-select form-select-sm">
+                <option value="10" selected>10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="0">All</option>
+              </select>
+              <button id="spoofablePrevBtn" class="btn btn-outline-secondary btn-sm" type="button">Prev</button>
+              <span id="spoofablePageInfo" class="muted">Page 1 of 1</span>
+              <button id="spoofableNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+            </div>
           </div>
         </section>
       </section>
 
       <section id="jobsView" class="view">
-        <section class="card">
-          <div class="section-header">
-            <h3>Job Runs</h3>
-            <div class="section-actions">
-              <button id="refreshJobsBtn" type="button">Refresh Jobs</button>
+        <section class="card shadow-sm">
+          <div class="card-body">
+            <div class="section-header">
+              <h3 class="h5 mb-0">Job Runs</h3>
+              <div class="section-actions">
+                <button id="refreshJobsBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Jobs</button>
+              </div>
             </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Job ID</th>
-                  <th>Host</th>
-                  <th>Status</th>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="jobsBody">
-                <tr><td colspan="6" class="muted">No jobs loaded</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-controls">
-            <label for="jobsPageSize">Rows</label>
-            <select id="jobsPageSize">
-              <option value="10">10</option>
-              <option value="15" selected>15</option>
-              <option value="25">25</option>
-              <option value="50">50</option>
-              <option value="0">All</option>
-            </select>
-            <button id="jobsPrevBtn" type="button">Prev</button>
-            <span id="jobsPageInfo" class="muted">Page 1 of 1</span>
-            <button id="jobsNextBtn" type="button">Next</button>
+            <div class="table-wrap mt-3">
+              <table class="table table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th scope="col">Job ID</th>
+                    <th scope="col">Host</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Started</th>
+                    <th scope="col">Finished</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="jobsBody">
+                  <tr><td colspan="6" class="muted">No jobs loaded</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-controls">
+              <label for="jobsPageSize">Rows</label>
+              <select id="jobsPageSize" class="form-select form-select-sm">
+                <option value="10" selected>10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="0">All</option>
+              </select>
+              <button id="jobsPrevBtn" class="btn btn-outline-secondary btn-sm" type="button">Prev</button>
+              <span id="jobsPageInfo" class="muted">Page 1 of 1</span>
+              <button id="jobsNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+            </div>
           </div>
         </section>
       </section>
 
       <section id="resultsView" class="view">
-        <section class="card">
-          <h3>Selected Job Result <span id="selectedResultScanId" class="muted"></span></h3>
-          <div id="jobResultsPanel" class="results-panel muted">Select "Results" from a job row.</div>
+        <section class="card shadow-sm">
+          <div class="card-body">
+            <h3 class="h5">Selected Job Result <span id="selectedResultScanId" class="muted"></span></h3>
+            <div id="jobResultsPanel" class="results-panel muted">Select "Results" from a job row.</div>
+          </div>
         </section>
       </section>
 
       <section id="adminView" class="view">
         <div id="adminShell" class="admin-shell">
-          <aside id="adminNav" class="admin-nav">
-            <button class="admin-nav-item active" type="button" data-admin-page="adminUsersPage">Users</button>
-            <button class="admin-nav-item" type="button" data-admin-page="adminProxyPage">Proxy</button>
-            <button class="admin-nav-item" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
-            <button class="admin-nav-item" type="button" data-admin-page="adminImportPage">Bulk Import</button>
-            <button class="admin-nav-item" type="button" data-admin-page="adminPurgePage">Data Purge</button>
-            <button class="admin-nav-item" type="button" data-admin-page="adminLogPage">Event Log</button>
+          <aside id="adminNav" class="admin-nav card shadow-sm">
+            <div class="card-body p-2 d-grid gap-2">
+              <button class="admin-nav-item btn active" type="button" data-admin-page="adminUsersPage">Users</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminProxyPage">Proxy</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminImportPage">Bulk Import</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminPurgePage">Data Purge</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminLogPage">Event Log</button>
+            </div>
           </aside>
           <div class="admin-content">
-            <section class="card admin-toolbar-card">
-              <div class="section-header">
-                <h3 id="adminPageTitle">Users</h3>
-                <button id="adminNavToggleBtn" type="button" class="ghost-btn admin-nav-toggle">Admin Menu</button>
+            <section class="card admin-toolbar-card shadow-sm">
+              <div class="card-body py-2">
+                <div class="section-header">
+                  <h3 id="adminPageTitle" class="h5 mb-0">Users</h3>
+                  <button id="adminNavToggleBtn" type="button" class="ghost-btn admin-nav-toggle btn btn-sm" aria-controls="adminNav" aria-expanded="true">Admin Menu</button>
+                </div>
               </div>
             </section>
 
             <section id="adminUsersPage" class="admin-page active">
-              <section class="card">
-                <div class="section-header">
-                  <h3>User Management</h3>
-                  <button id="refreshUsersBtn" type="button">Refresh Users</button>
-                </div>
-                <form id="userForm" class="proxy-form">
-                  <div class="proxy-grid">
-                    <div class="form-field">
-                      <label for="userUsername">Username</label>
-                      <input id="userUsername" type="text" placeholder="username" required>
-                    </div>
-                    <div class="form-field">
-                      <label for="userPassword">Password</label>
-                      <input id="userPassword" type="password" placeholder="temporary password" required>
-                    </div>
-                    <div class="form-field">
-                      <label for="userName">Name</label>
-                      <input id="userName" type="text" placeholder="First name">
-                    </div>
-                    <div class="form-field">
-                      <label for="userSurname">Surname</label>
-                      <input id="userSurname" type="text" placeholder="Last name">
-                    </div>
-                    <div class="form-field">
-                      <label for="userEmail">Email</label>
-                      <input id="userEmail" type="email" placeholder="user@company.com">
-                    </div>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">User Management</h3>
+                    <button id="refreshUsersBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Users</button>
                   </div>
-                  <button type="submit" id="createUserBtn">Create User</button>
-                </form>
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                <tr>
-                  <th>Username</th>
-                  <th>Name</th>
-                  <th>Surname</th>
-                  <th>Email</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="usersBody">
-                <tr><td colspan="6" class="muted">No users loaded</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-                <section id="editUserPanel" class="card hidden">
-                  <h3>Edit User</h3>
-                  <form id="editUserForm" class="proxy-form">
-                    <input id="editUserId" type="hidden">
+                  <form id="userForm" class="proxy-form mt-3">
                     <div class="proxy-grid">
                       <div class="form-field">
-                        <label for="editUserUsername">Username</label>
-                        <input id="editUserUsername" type="text" readonly>
+                        <label for="userUsername" class="form-label">Username</label>
+                        <input id="userUsername" class="form-control" type="text" placeholder="username" required>
                       </div>
                       <div class="form-field">
-                        <label for="editUserName">Name</label>
-                        <input id="editUserName" type="text" placeholder="First name">
+                        <label for="userPassword" class="form-label">Password</label>
+                        <input id="userPassword" class="form-control" type="password" placeholder="temporary password" required>
                       </div>
                       <div class="form-field">
-                        <label for="editUserSurname">Surname</label>
-                        <input id="editUserSurname" type="text" placeholder="Last name">
+                        <label for="userName" class="form-label">Name</label>
+                        <input id="userName" class="form-control" type="text" placeholder="First name">
                       </div>
                       <div class="form-field">
-                        <label for="editUserEmail">Email</label>
-                        <input id="editUserEmail" type="email" placeholder="user@company.com">
+                        <label for="userSurname" class="form-label">Surname</label>
+                        <input id="userSurname" class="form-control" type="text" placeholder="Last name">
+                      </div>
+                      <div class="form-field">
+                        <label for="userEmail" class="form-label">Email</label>
+                        <input id="userEmail" class="form-control" type="email" placeholder="user@company.com">
                       </div>
                     </div>
-                    <label class="checkbox-row">
-                      <input id="editUserIsActive" type="checkbox" checked>
-                      <span>User Active</span>
-                    </label>
-                    <div class="target-actions">
-                      <button type="submit">Save User</button>
-                      <button id="cancelEditUserBtn" type="button" class="ghost-btn">Cancel</button>
-                    </div>
+                    <button type="submit" id="createUserBtn" class="btn btn-primary mt-2">Create User</button>
                   </form>
-                </section>
-        </section>
+                  <div class="table-wrap mt-3">
+                    <table class="table table-hover align-middle">
+                      <thead>
+                        <tr>
+                          <th scope="col">Username</th>
+                          <th scope="col">Name</th>
+                          <th scope="col">Surname</th>
+                          <th scope="col">Email</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="usersBody">
+                        <tr><td colspan="6" class="muted">No users loaded</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <section id="editUserPanel" class="card hidden mt-3">
+                    <div class="card-body">
+                      <h3 class="h5">Edit User</h3>
+                      <form id="editUserForm" class="proxy-form">
+                        <input id="editUserId" type="hidden">
+                        <div class="proxy-grid">
+                          <div class="form-field">
+                            <label for="editUserUsername" class="form-label">Username</label>
+                            <input id="editUserUsername" class="form-control" type="text" readonly>
+                          </div>
+                          <div class="form-field">
+                            <label for="editUserName" class="form-label">Name</label>
+                            <input id="editUserName" class="form-control" type="text" placeholder="First name">
+                          </div>
+                          <div class="form-field">
+                            <label for="editUserSurname" class="form-label">Surname</label>
+                            <input id="editUserSurname" class="form-control" type="text" placeholder="Last name">
+                          </div>
+                          <div class="form-field">
+                            <label for="editUserEmail" class="form-label">Email</label>
+                            <input id="editUserEmail" class="form-control" type="email" placeholder="user@company.com">
+                          </div>
+                        </div>
+                        <label class="checkbox-row mt-2">
+                          <input id="editUserIsActive" class="form-check-input me-2" type="checkbox" checked>
+                          <span>User Active</span>
+                        </label>
+                        <div class="target-actions mt-3">
+                          <button type="submit" class="btn btn-primary btn-sm">Save User</button>
+                          <button id="cancelEditUserBtn" type="button" class="ghost-btn btn btn-sm">Cancel</button>
+                        </div>
+                      </form>
+                    </div>
+                  </section>
+                </div>
+              </section>
             </section>
 
             <section id="adminProxyPage" class="admin-page">
-              <section class="card">
-                <div class="section-header">
-                  <h3>Proxy Configuration</h3>
-                  <button id="reloadProxyBtn" type="button">Reload Proxy Config</button>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Proxy Configuration</h3>
+                    <button id="reloadProxyBtn" class="btn btn-outline-primary btn-sm" type="button">Reload Proxy Config</button>
+                  </div>
+                  <form id="proxyForm" class="proxy-form mt-3">
+                    <label class="checkbox-row mb-2">
+                      <input id="proxyEnabled" class="form-check-input me-2" type="checkbox">
+                      <span>Enable HTTP Proxy For Scans</span>
+                    </label>
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="proxyHost" class="form-label">Proxy Host</label>
+                        <input id="proxyHost" class="form-control" type="text" placeholder="proxy.company.local">
+                      </div>
+                      <div class="form-field">
+                        <label for="proxyPort" class="form-label">Proxy Port</label>
+                        <input id="proxyPort" class="form-control" type="number" min="1" max="65535" value="8080">
+                      </div>
+                      <div class="form-field">
+                        <label for="proxyUsername" class="form-label">Proxy Username</label>
+                        <input id="proxyUsername" class="form-control" type="text" placeholder="optional">
+                      </div>
+                      <div class="form-field">
+                        <label for="proxyPassword" class="form-label">Proxy Password</label>
+                        <input id="proxyPassword" class="form-control" type="password" placeholder="leave empty to keep current">
+                      </div>
+                    </div>
+                    <div class="form-field mt-2">
+                      <label for="proxyNoProxyPatterns" class="form-label">Do Not Use Proxy For (wildcards allowed)</label>
+                      <textarea id="proxyNoProxyPatterns" class="form-control" rows="3" placeholder="*.domain.local, *.corp.internal, localhost"></textarea>
+                    </div>
+                    <button type="submit" id="saveProxyBtn" class="btn btn-primary mt-2">Save Proxy Config</button>
+                  </form>
                 </div>
-                <form id="proxyForm" class="proxy-form">
-                  <label class="checkbox-row">
-                    <input id="proxyEnabled" type="checkbox">
-                    <span>Enable HTTP Proxy For Scans</span>
-                  </label>
-                  <div class="proxy-grid">
-                    <div class="form-field">
-                      <label for="proxyHost">Proxy Host</label>
-                      <input id="proxyHost" type="text" placeholder="proxy.company.local">
-                    </div>
-                    <div class="form-field">
-                      <label for="proxyPort">Proxy Port</label>
-                      <input id="proxyPort" type="number" min="1" max="65535" value="8080">
-                    </div>
-                    <div class="form-field">
-                      <label for="proxyUsername">Proxy Username</label>
-                      <input id="proxyUsername" type="text" placeholder="optional">
-                    </div>
-                    <div class="form-field">
-                      <label for="proxyPassword">Proxy Password</label>
-                      <input id="proxyPassword" type="password" placeholder="leave empty to keep current">
-                    </div>
-                  </div>
-                  <div class="form-field">
-                    <label for="proxyNoProxyPatterns">Do Not Use Proxy For (wildcards allowed)</label>
-                    <textarea id="proxyNoProxyPatterns" rows="3" placeholder="*.domain.local, *.corp.internal, localhost"></textarea>
-                  </div>
-                  <button type="submit" id="saveProxyBtn">Save Proxy Config</button>
-                </form>
               </section>
             </section>
 
             <section id="adminSchedulerPage" class="admin-page">
-              <section class="card">
-                <div class="section-header">
-                  <h3>Scan Scheduler</h3>
-                  <button id="reloadSchedulerBtn" type="button">Reload Scheduler Config</button>
-                </div>
-                <form id="schedulerForm" class="proxy-form">
-                  <label class="checkbox-row">
-                    <input id="schedulerEnabled" type="checkbox" checked>
-                    <span>Enable Scheduled Scan Runs</span>
-                  </label>
-
-                  <div class="proxy-grid">
-                    <div class="form-field">
-                      <label for="schedulerFrequency">Frequency</label>
-                      <select id="schedulerFrequency">
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="hourly">Hourly</option>
-                        <option value="interval">Every N Minutes</option>
-                      </select>
-                    </div>
-                    <div class="form-field" id="schedulerDayWrap">
-                      <label for="schedulerDayOfWeek">Day Of Week</label>
-                      <select id="schedulerDayOfWeek">
-                        <option value="0">Sunday</option>
-                        <option value="1">Monday</option>
-                        <option value="2">Tuesday</option>
-                        <option value="3">Wednesday</option>
-                        <option value="4">Thursday</option>
-                        <option value="5">Friday</option>
-                        <option value="6">Saturday</option>
-                      </select>
-                    </div>
-                    <div class="form-field" id="schedulerTimeWrap">
-                      <label for="schedulerTime">Time (UTC)</label>
-                      <input id="schedulerTime" type="time" value="02:00">
-                    </div>
-                    <div class="form-field hidden" id="schedulerIntervalWrap">
-                      <label for="schedulerIntervalMinutes">Interval (Minutes)</label>
-                      <input id="schedulerIntervalMinutes" type="number" min="1" max="10080" value="1440">
-                    </div>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Scan Scheduler</h3>
+                    <button id="reloadSchedulerBtn" class="btn btn-outline-primary btn-sm" type="button">Reload Scheduler Config</button>
                   </div>
-                  <p id="schedulerLastRunInfo" class="form-hint">Last run: never</p>
-                  <button type="submit" id="saveSchedulerBtn">Save Scheduler Config</button>
-                </form>
+                  <form id="schedulerForm" class="proxy-form mt-3">
+                    <label class="checkbox-row mb-2">
+                      <input id="schedulerEnabled" class="form-check-input me-2" type="checkbox" checked>
+                      <span>Enable Scheduled Scan Runs</span>
+                    </label>
+
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="schedulerFrequency" class="form-label">Frequency</label>
+                        <select id="schedulerFrequency" class="form-select">
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                          <option value="hourly">Hourly</option>
+                          <option value="interval">Every N Minutes</option>
+                        </select>
+                      </div>
+                      <div class="form-field" id="schedulerDayWrap">
+                        <label for="schedulerDayOfWeek" class="form-label">Day Of Week</label>
+                        <select id="schedulerDayOfWeek" class="form-select">
+                          <option value="0">Sunday</option>
+                          <option value="1">Monday</option>
+                          <option value="2">Tuesday</option>
+                          <option value="3">Wednesday</option>
+                          <option value="4">Thursday</option>
+                          <option value="5">Friday</option>
+                          <option value="6">Saturday</option>
+                        </select>
+                      </div>
+                      <div class="form-field" id="schedulerTimeWrap">
+                        <label for="schedulerTime" class="form-label">Time (UTC)</label>
+                        <input id="schedulerTime" class="form-control" type="time" value="02:00">
+                      </div>
+                      <div class="form-field hidden" id="schedulerIntervalWrap">
+                        <label for="schedulerIntervalMinutes" class="form-label">Interval (Minutes)</label>
+                        <input id="schedulerIntervalMinutes" class="form-control" type="number" min="1" max="10080" value="1440">
+                      </div>
+                    </div>
+                    <p id="schedulerLastRunInfo" class="form-hint mt-2">Last run: never</p>
+                    <button type="submit" id="saveSchedulerBtn" class="btn btn-primary">Save Scheduler Config</button>
+                  </form>
+                </div>
               </section>
             </section>
 
             <section id="adminImportPage" class="admin-page">
-              <section class="card">
-                <div class="section-header">
-                  <h3>Bulk Import Targets</h3>
-                </div>
-                <form id="bulkTargetsForm" class="proxy-form">
-                  <div class="form-field">
-                    <label for="targetsCsvFile">CSV File</label>
-                    <input id="targetsCsvFile" type="file" accept=".csv,text/csv" required>
-                    <p class="form-hint">CSV format: one target per line as <span class="tiny-mono">hostname,port</span> or <span class="tiny-mono">hostname</span>. Do not include a header row.</p>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Bulk Import Targets</h3>
                   </div>
-                  <button type="submit" id="importTargetsBtn">Import CSV</button>
-                </form>
+                  <form id="bulkTargetsForm" class="proxy-form mt-3">
+                    <div class="form-field">
+                      <label for="targetsCsvFile" class="form-label">CSV File</label>
+                      <input id="targetsCsvFile" class="form-control" type="file" accept=".csv,text/csv" required>
+                      <p class="form-hint">CSV format: one target per line as <span class="tiny-mono">hostname,port</span> or <span class="tiny-mono">hostname</span>. Do not include a header row.</p>
+                    </div>
+                    <button type="submit" id="importTargetsBtn" class="btn btn-primary">Import CSV</button>
+                  </form>
+                </div>
               </section>
             </section>
 
             <section id="adminPurgePage" class="admin-page">
-              <section class="card">
-                <h3>Purge Targets / Hosts</h3>
-                <p class="muted">
-                  Removes all targets/hosts and their related scan results, scan diffs, and stored DNS data.
-                </p>
-                <p class="muted">
-                  Impact: irreversible data loss for all target and scan history.
-                </p>
-                <button id="purgeTargetsBtn" type="button">Purge Targets / Hosts</button>
+              <section class="card shadow-sm mb-3">
+                <div class="card-body">
+                  <h3 class="h5">Purge Targets / Hosts</h3>
+                  <p class="muted mb-1">Removes all targets/hosts and their related scan results, scan diffs, and stored DNS data.</p>
+                  <p class="muted">Impact: irreversible data loss for all target and scan history.</p>
+                  <button id="purgeTargetsBtn" class="btn btn-outline-danger" type="button">Purge Targets / Hosts</button>
+                </div>
               </section>
 
-              <section class="card">
-                <h3>Purge DNS Data</h3>
-                <p class="muted">
-                  Deletes cached DNS records for all targets (SOA, A/AAAA, MX, SPF, DMARC, WHOIS).
-                </p>
-                <p class="muted">
-                  Impact: targets remain, DNS details are removed and must be collected again.
-                </p>
-                <button id="purgeDnsBtn" type="button">Purge DNS Data</button>
+              <section class="card shadow-sm mb-3">
+                <div class="card-body">
+                  <h3 class="h5">Purge DNS Data</h3>
+                  <p class="muted mb-1">Deletes cached DNS records for all targets (SOA, A/AAAA, MX, SPF, DMARC, WHOIS).</p>
+                  <p class="muted">Impact: targets remain, DNS details are removed and must be collected again.</p>
+                  <button id="purgeDnsBtn" class="btn btn-outline-warning" type="button">Purge DNS Data</button>
+                </div>
               </section>
 
-              <section class="card">
-                <h3>Purge Jobs</h3>
-                <p class="muted">
-                  Removes all scan jobs and associated plugin results and diff records.
-                </p>
-                <p class="muted">
-                  Impact: irreversible loss of job execution history and result evidence.
-                </p>
-                <button id="purgeJobsAdminBtn" type="button">Purge Jobs</button>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <h3 class="h5">Purge Jobs</h3>
+                  <p class="muted mb-1">Removes all scan jobs and associated plugin results and diff records.</p>
+                  <p class="muted">Impact: irreversible loss of job execution history and result evidence.</p>
+                  <button id="purgeJobsAdminBtn" class="btn btn-outline-danger" type="button">Purge Jobs</button>
+                </div>
               </section>
             </section>
 
             <section id="adminLogPage" class="admin-page">
-              <section class="card">
-                <h3>Live Session Log</h3>
-                <pre id="logPanel">Ready.</pre>
+              <section class="card shadow-sm mb-3">
+                <div class="card-body">
+                  <h3 class="h5">Live Session Log</h3>
+                  <pre id="logPanel" role="log" aria-live="polite">Ready.</pre>
+                </div>
               </section>
-              <section class="card">
-                <div class="section-header">
-                  <h3>Stored Event History</h3>
-                  <button id="refreshEventLogBtn" type="button">Refresh History</button>
-                </div>
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Time</th>
-                        <th>User</th>
-                        <th>Source</th>
-                        <th>Level</th>
-                        <th>Message</th>
-                      </tr>
-                    </thead>
-                    <tbody id="eventLogBody">
-                      <tr><td colspan="5" class="muted">No event history loaded</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-                <div class="table-controls">
-                  <label for="eventLogPageSize">Rows</label>
-                  <select id="eventLogPageSize">
-                    <option value="10">10</option>
-                    <option value="25" selected>25</option>
-                    <option value="50">50</option>
-                    <option value="100">100</option>
-                  </select>
-                  <button id="eventLogPrevBtn" type="button">Prev</button>
-                  <span id="eventLogPageInfo" class="muted">Page 1 of 1</span>
-                  <button id="eventLogNextBtn" type="button">Next</button>
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Stored Event History</h3>
+                    <button id="refreshEventLogBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh History</button>
+                  </div>
+                  <div class="table-wrap mt-3">
+                    <table class="table table-hover align-middle">
+                      <thead>
+                        <tr>
+                          <th scope="col">Time</th>
+                          <th scope="col">User</th>
+                          <th scope="col">Source</th>
+                          <th scope="col">Level</th>
+                          <th scope="col">Message</th>
+                        </tr>
+                      </thead>
+                      <tbody id="eventLogBody">
+                        <tr><td colspan="5" class="muted">No event history loaded</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="table-controls">
+                    <label for="eventLogPageSize">Rows</label>
+                    <select id="eventLogPageSize" class="form-select form-select-sm">
+                      <option value="10" selected>10</option>
+                      <option value="25">25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                    <button id="eventLogPrevBtn" class="btn btn-outline-secondary btn-sm" type="button">Prev</button>
+                    <span id="eventLogPageInfo" class="muted">Page 1 of 1</span>
+                    <button id="eventLogNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+                  </div>
                 </div>
               </section>
             </section>
@@ -517,6 +534,11 @@
     </main>
   </div>
 
+  <script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+    crossorigin="anonymous"
+  ></script>
   <script src="./app.js"></script>
 </body>
 </html>
