@@ -1,14 +1,15 @@
 # TLSAuditHub
 
 [![CI](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml/badge.svg)](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/trizzosk/TLSAuditHub)](https://github.com/trizzosk/TLSAuditHub/releases)
-[![License](https://img.shields.io/github/license/trizzosk/TLSAuditHub)](https://github.com/trizzosk/TLSAuditHub/blob/main/LICENSE)
+[![Latest Release](https://img.shields.io/badge/release-0.4-blue)](https://github.com/trizzosk/TLSAuditHub/releases)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/release/python-3120/)
 
 <img src="ui-prototype/logo.svg" alt="TLSAuditHub logo" style="max-width: 33%; width: 100%; height: auto; justify-content: center;">
 
 ## Objective
 TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across services. It focuses on scheduled scans, change tracking, and a clean operator workflow.
+The core TLS scanning engine in this project is [`sslyze`](https://github.com/nabla-c0d3/sslyze), which powers the certificate and protocol analysis.
 
 ## Functions
 - Authentication via `/auth/token`.
@@ -55,3 +56,6 @@ Change this password immediately after first login.
 - The UI presents only the login form until authenticated.
 - The Spoofable report uses stored DNS data (SPF/DMARC) per target to classify spoofing risk.
 - DNS data is collected in the background when a target is added.
+
+## Acknowledgments
+- Kudos to the SSLyze maintainers for building and maintaining a robust TLS analysis tool that this project relies on.
