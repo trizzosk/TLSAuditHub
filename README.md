@@ -1,5 +1,7 @@
 # TLSAuditHub
 
+<img src="ui-prototype/logo.svg" alt="TLSAuditHub logo" style="max-width: 33%; width: 100%; height: auto; justify-content: center;">
+
 ## Objective
 TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across services. It focuses on scheduled scans, change tracking, and a clean operator workflow.
 
