@@ -14,7 +14,7 @@ services:
 
   api:
     image: python:3.12-slim
-    container_name: sslyze-api
+    container_name: tlsaudithub-api
     env_file:
     - .env
     environment:
@@ -36,7 +36,7 @@ services:
 
   worker:
     image: python:3.12-slim
-    container_name: sslyze-worker
+    container_name: tlsaudithub-worker
     environment:
       HTTP_PROXY: ${HTTP_PROXY}
       HTTPS_PROXY: ${HTTPS_PROXY}
@@ -54,7 +54,7 @@ services:
 
   scheduler:
     image: python:3.12-slim
-    container_name: sslyze-scheduler
+    container_name: tlsaudithub-scheduler
     environment:
       HTTP_PROXY: ${HTTP_PROXY}
       HTTPS_PROXY: ${HTTPS_PROXY}
@@ -64,13 +64,14 @@ services:
       - ./app:/app/shared
     working_dir: /app
     command: >
-      sh -c "pip install sslyze celery redis psycopg2-binary sqlalchemy &&
+      sh -c "pip install sslyze celery redis psycopg2-binary sqlalchemy dnspython python-whois &&
              celery -A worker beat --loglevel=info"
     depends_on:
       - redis
 
   postgres:
     image: postgres:16
+    container_name: tlsaudithub-postgres
     environment:
       POSTGRES_DB: sslyze
       POSTGRES_USER: sslyze
@@ -80,3 +81,4 @@ services:
 
   redis:
     image: redis:7
+    container_name: tlsaudithub-redis
