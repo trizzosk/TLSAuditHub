@@ -41,6 +41,13 @@ class UserCreate(BaseModel):
     is_active: bool = True
 
 
+class UserUpdate(BaseModel):
+    name: str = ""
+    surname: str = ""
+    email: str = ""
+    is_active: bool = True
+
+
 class EventLogCreate(BaseModel):
     message: str
     source: str = "ui"
@@ -489,12 +496,18 @@ def list_spoofable_targets(
         for row in rows:
             data = row._mapping.get("data") or {}
             dmarc = data.get("dmarc") or {}
+            mx = data.get("mx") or []
+            a_records = data.get("a") or []
+            aaaa_records = data.get("aaaa") or []
             payload.append(
                 {
                     "id": row._mapping["id"],
                     "hostname": row._mapping["hostname"],
                     "spf": data.get("spf") or "",
                     "dmarc_policy": dmarc.get("policy") or "",
+                    "has_mx": bool(mx),
+                    "has_a": bool(a_records),
+                    "has_aaaa": bool(aaaa_records),
                 }
             )
         return {"items": payload, "total": total}
@@ -673,6 +686,45 @@ def create_user(payload: UserCreate, user=Depends(get_current_user)):
         )
         db.commit()
         return {"status": "created"}
+    finally:
+        db.close()
+
+
+@app.put("/admin/users/{user_id}")
+def update_user(
+    user_id: str, payload: UserUpdate, user=Depends(get_current_user)
+):
+    db = SessionLocal()
+    try:
+        ensure_users_table(db)
+        row = db.execute(
+            text("SELECT id, username FROM users WHERE id=:id"),
+            {"id": user_id},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        db.execute(
+            text(
+                """
+                UPDATE users
+                SET name=:n,
+                    surname=:s,
+                    email=:e,
+                    is_active=:a
+                WHERE id=:id
+                """
+            ),
+            {
+                "id": user_id,
+                "n": payload.name.strip(),
+                "s": payload.surname.strip(),
+                "e": payload.email.strip(),
+                "a": bool(payload.is_active),
+            },
+        )
+        db.commit()
+        return {"status": "updated", "user_id": user_id}
     finally:
         db.close()
 
@@ -932,6 +984,33 @@ def update_scheduler_config(
         db.close()
 
 
+def _purge_jobs_data(db):
+    results_row = db.execute(
+        text("SELECT COUNT(*) AS c FROM scan_results")
+    ).fetchone()
+    diffs_row = db.execute(
+        text("SELECT COUNT(*) AS c FROM scan_diffs")
+    ).fetchone()
+    scans_row = db.execute(
+        text("SELECT COUNT(*) AS c FROM scans")
+    ).fetchone()
+
+    deleted_results = int(results_row._mapping["c"]) if results_row else 0
+    deleted_diffs = int(diffs_row._mapping["c"]) if diffs_row else 0
+    deleted_scans = int(scans_row._mapping["c"]) if scans_row else 0
+
+    db.execute(text("DELETE FROM scan_results"))
+    db.execute(text("DELETE FROM scan_diffs"))
+    db.execute(text("DELETE FROM scans"))
+    db.commit()
+
+    return {
+        "deleted_scans": deleted_scans,
+        "deleted_results": deleted_results,
+        "deleted_diffs": deleted_diffs,
+    }
+
+
 @app.get("/jobs")
 def list_jobs(
     limit: int = 0, offset: int = 0, user=Depends(get_current_user)
@@ -988,17 +1067,63 @@ def list_jobs(
 def purge_jobs(user=Depends(get_current_user)):
     db = SessionLocal()
     try:
-        db.execute(
-            text(
-                """
-                UPDATE scans
-                SET status='purged'
-                WHERE status IS NULL OR status != 'purged'
-                """
-            )
-        )
+        deleted = _purge_jobs_data(db)
+        return {"status": "purged", **deleted}
+    finally:
+        db.close()
+
+
+@app.post("/admin/purge/jobs")
+def admin_purge_jobs(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        deleted = _purge_jobs_data(db)
+        return {"status": "purged", **deleted}
+    finally:
+        db.close()
+
+
+@app.post("/admin/purge/dns")
+def admin_purge_dns(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_target_dns_table(db)
+        dns_row = db.execute(
+            text("SELECT COUNT(*) AS c FROM target_dns")
+        ).fetchone()
+        deleted_dns = int(dns_row._mapping["c"]) if dns_row else 0
+        db.execute(text("DELETE FROM target_dns"))
         db.commit()
-        return {"status": "purged"}
+        return {"status": "purged", "deleted_dns": deleted_dns}
+    finally:
+        db.close()
+
+
+@app.post("/admin/purge/targets")
+def admin_purge_targets(user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        ensure_target_dns_table(db)
+        targets_row = db.execute(
+            text("SELECT COUNT(*) AS c FROM targets")
+        ).fetchone()
+        dns_row = db.execute(
+            text("SELECT COUNT(*) AS c FROM target_dns")
+        ).fetchone()
+        deleted_targets = int(targets_row._mapping["c"]) if targets_row else 0
+        deleted_dns = int(dns_row._mapping["c"]) if dns_row else 0
+
+        deleted_jobs = _purge_jobs_data(db)
+        db.execute(text("DELETE FROM target_dns"))
+        db.execute(text("DELETE FROM targets"))
+        db.commit()
+
+        return {
+            "status": "purged",
+            "deleted_targets": deleted_targets,
+            "deleted_dns": deleted_dns,
+            **deleted_jobs,
+        }
     finally:
         db.close()
 

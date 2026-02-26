@@ -179,7 +179,6 @@
           <div class="section-header">
             <h3>Job Runs</h3>
             <div class="section-actions">
-              <button id="purgeJobsBtn" type="button">Purge Jobs</button>
               <button id="refreshJobsBtn" type="button">Refresh Jobs</button>
             </div>
           </div>
@@ -230,6 +229,7 @@
             <button class="admin-nav-item" type="button" data-admin-page="adminProxyPage">Proxy</button>
             <button class="admin-nav-item" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
             <button class="admin-nav-item" type="button" data-admin-page="adminImportPage">Bulk Import</button>
+            <button class="admin-nav-item" type="button" data-admin-page="adminPurgePage">Data Purge</button>
             <button class="admin-nav-item" type="button" data-admin-page="adminLogPage">Event Log</button>
           </aside>
           <div class="admin-content">
@@ -288,6 +288,39 @@
               </tbody>
             </table>
           </div>
+
+                <section id="editUserPanel" class="card hidden">
+                  <h3>Edit User</h3>
+                  <form id="editUserForm" class="proxy-form">
+                    <input id="editUserId" type="hidden">
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="editUserUsername">Username</label>
+                        <input id="editUserUsername" type="text" readonly>
+                      </div>
+                      <div class="form-field">
+                        <label for="editUserName">Name</label>
+                        <input id="editUserName" type="text" placeholder="First name">
+                      </div>
+                      <div class="form-field">
+                        <label for="editUserSurname">Surname</label>
+                        <input id="editUserSurname" type="text" placeholder="Last name">
+                      </div>
+                      <div class="form-field">
+                        <label for="editUserEmail">Email</label>
+                        <input id="editUserEmail" type="email" placeholder="user@company.com">
+                      </div>
+                    </div>
+                    <label class="checkbox-row">
+                      <input id="editUserIsActive" type="checkbox" checked>
+                      <span>User Active</span>
+                    </label>
+                    <div class="target-actions">
+                      <button type="submit">Save User</button>
+                      <button id="cancelEditUserBtn" type="button" class="ghost-btn">Cancel</button>
+                    </div>
+                  </form>
+                </section>
         </section>
             </section>
 
@@ -391,6 +424,41 @@
                   </div>
                   <button type="submit" id="importTargetsBtn">Import CSV</button>
                 </form>
+              </section>
+            </section>
+
+            <section id="adminPurgePage" class="admin-page">
+              <section class="card">
+                <h3>Purge Targets / Hosts</h3>
+                <p class="muted">
+                  Removes all targets/hosts and their related scan results, scan diffs, and stored DNS data.
+                </p>
+                <p class="muted">
+                  Impact: irreversible data loss for all target and scan history.
+                </p>
+                <button id="purgeTargetsBtn" type="button">Purge Targets / Hosts</button>
+              </section>
+
+              <section class="card">
+                <h3>Purge DNS Data</h3>
+                <p class="muted">
+                  Deletes cached DNS records for all targets (SOA, A/AAAA, MX, SPF, DMARC, WHOIS).
+                </p>
+                <p class="muted">
+                  Impact: targets remain, DNS details are removed and must be collected again.
+                </p>
+                <button id="purgeDnsBtn" type="button">Purge DNS Data</button>
+              </section>
+
+              <section class="card">
+                <h3>Purge Jobs</h3>
+                <p class="muted">
+                  Removes all scan jobs and associated plugin results and diff records.
+                </p>
+                <p class="muted">
+                  Impact: irreversible loss of job execution history and result evidence.
+                </p>
+                <button id="purgeJobsAdminBtn" type="button">Purge Jobs</button>
               </section>
             </section>
 

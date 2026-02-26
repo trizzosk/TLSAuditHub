@@ -11,6 +11,7 @@ from sqlalchemy import text
 from shared.database import SessionLocal
 from datetime import datetime, timedelta
 import ipaddress
+import socket
 import uuid
 import json
 import re
@@ -757,6 +758,10 @@ def _build_dns_payload(hostname):
     payload = {
         "hostname": host,
         "whois": {},
+        "soa": [],
+        "a": [],
+        "aaaa": [],
+        "resolved_ips": [],
         "ns": [],
         "mx": [],
         "spf": "",
@@ -769,6 +774,10 @@ def _build_dns_payload(hostname):
     is_ip = _is_ip_address(host)
 
     if not is_ip:
+        payload["soa"] = _resolve_records(host, "SOA")
+        payload["a"] = _resolve_records(host, "A")
+        payload["aaaa"] = _resolve_records(host, "AAAA")
+        payload["resolved_ips"] = _resolve_host_ips(host)
         payload["ns"] = _resolve_records(host, "NS")
         payload["mx"] = _resolve_records(host, "MX")
         txt_records = _resolve_records(host, "TXT")
@@ -782,6 +791,8 @@ def _build_dns_payload(hostname):
             "policy": _parse_dmarc_policy(dmarc_record),
             "domain": dmarc_domain,
         }
+    else:
+        payload["resolved_ips"] = [host]
 
     try:
         whois_result = whois.whois(host)
@@ -805,6 +816,26 @@ def _build_dns_payload(hostname):
         payload["whois"] = {"error": str(exc)}
 
     return payload
+
+
+def _resolve_host_ips(hostname):
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return []
+
+    addresses = []
+    seen = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0])
+        if ip in seen:
+            continue
+        seen.add(ip)
+        addresses.append(ip)
+    return addresses
 
 def _parse_no_proxy_patterns(raw_patterns):
     if not raw_patterns:

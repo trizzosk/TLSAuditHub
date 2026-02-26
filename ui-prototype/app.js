@@ -32,7 +32,6 @@ const ui = {
   spoofableNextBtn: document.getElementById("spoofableNextBtn"),
   spoofablePageInfo: document.getElementById("spoofablePageInfo"),
   refreshJobsBtn: document.getElementById("refreshJobsBtn"),
-  purgeJobsBtn: document.getElementById("purgeJobsBtn"),
   jobsBody: document.getElementById("jobsBody"),
   jobsPageSize: document.getElementById("jobsPageSize"),
   jobsPrevBtn: document.getElementById("jobsPrevBtn"),
@@ -62,6 +61,9 @@ const ui = {
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
   bulkTargetsForm: document.getElementById("bulkTargetsForm"),
   targetsCsvFile: document.getElementById("targetsCsvFile"),
+  purgeTargetsBtn: document.getElementById("purgeTargetsBtn"),
+  purgeDnsBtn: document.getElementById("purgeDnsBtn"),
+  purgeJobsAdminBtn: document.getElementById("purgeJobsAdminBtn"),
   userForm: document.getElementById("userForm"),
   userUsername: document.getElementById("userUsername"),
   userPassword: document.getElementById("userPassword"),
@@ -69,6 +71,15 @@ const ui = {
   userSurname: document.getElementById("userSurname"),
   userEmail: document.getElementById("userEmail"),
   usersBody: document.getElementById("usersBody"),
+  editUserPanel: document.getElementById("editUserPanel"),
+  editUserForm: document.getElementById("editUserForm"),
+  editUserId: document.getElementById("editUserId"),
+  editUserUsername: document.getElementById("editUserUsername"),
+  editUserName: document.getElementById("editUserName"),
+  editUserSurname: document.getElementById("editUserSurname"),
+  editUserEmail: document.getElementById("editUserEmail"),
+  editUserIsActive: document.getElementById("editUserIsActive"),
+  cancelEditUserBtn: document.getElementById("cancelEditUserBtn"),
   adminShell: document.getElementById("adminShell"),
   adminNav: document.getElementById("adminNav"),
   adminNavToggleBtn: document.getElementById("adminNavToggleBtn"),
@@ -87,6 +98,7 @@ const ui = {
 let accessToken = "";
 let currentUsername = "";
 const jobIndex = new Map();
+const userIndex = new Map();
 const SESSION_TOKEN_KEY = "tlsaudithub_access_token";
 const SESSION_USER_KEY = "tlsaudithub_username";
 
@@ -912,6 +924,22 @@ function renderDnsData(targetLabel, payload) {
       ${renderDnsList(data.ns, "No NS records found.")}
     </article>
     <article class="result-card">
+      <h4>SOA Records</h4>
+      ${renderDnsList(data.soa, "No SOA records found.")}
+    </article>
+    <article class="result-card">
+      <h4>A Records</h4>
+      ${renderDnsList(data.a, "No A records found.")}
+    </article>
+    <article class="result-card">
+      <h4>AAAA Records</h4>
+      ${renderDnsList(data.aaaa, "No AAAA records found.")}
+    </article>
+    <article class="result-card">
+      <h4>Resolved IP Addresses</h4>
+      ${renderDnsList(data.resolved_ips, "No resolved IP addresses found.")}
+    </article>
+    <article class="result-card">
       <h4>MX Records</h4>
       ${renderDnsList(
         (Array.isArray(data.mx) ? data.mx : []).map(
@@ -1016,12 +1044,17 @@ function renderJobs(jobs) {
     .join("");
 }
 
-function evaluateSpoofable(spf, dmarcPolicy) {
+function evaluateSpoofable(spf, dmarcPolicy, hasMx, hasA, hasAaaa) {
   const spfValue = String(spf || "").trim().toLowerCase();
   const policy = String(dmarcPolicy || "").trim().toLowerCase();
   const spfStrict = spfValue.endsWith("-all");
   const dmarcReject = policy === "reject" || policy === "quarantine";
   const dmarcNone = policy === "" || policy === "none";
+  const hasMailRoute = Boolean(hasMx || hasA || hasAaaa);
+
+  if (!hasMailRoute && !spfValue && dmarcNone) {
+    return { label: "Not spoofable", severity: "good" };
+  }
 
   if (!spfStrict && dmarcNone) {
     return { label: "Spoofable", severity: "bad" };
@@ -1043,7 +1076,13 @@ function renderSpoofableList(items) {
     .map((row) => {
       const spf = row.spf || "-";
       const dmarc = row.dmarc_policy || "-";
-      const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+      const result = evaluateSpoofable(
+        row.spf,
+        row.dmarc_policy,
+        row.has_mx,
+        row.has_a,
+        row.has_aaaa
+      );
       return `
         <tr>
           <td>${escapeHtml(row.hostname || "-")}</td>
@@ -1074,7 +1113,13 @@ async function exportSpoofableCsv() {
     const header = ["Target / Host", "SPF Record", "DMARC Policy", "Result"];
     const lines = [header.map(escapeCsv).join(",")];
     items.forEach((row) => {
-      const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+      const result = evaluateSpoofable(
+        row.spf,
+        row.dmarc_policy,
+        row.has_mx,
+        row.has_a,
+        row.has_aaaa
+      );
       lines.push(
         [
           row.hostname || "-",
@@ -1105,7 +1150,13 @@ async function exportSpoofablePdf() {
 
     const tableRows = items
       .map((row) => {
-        const result = evaluateSpoofable(row.spf, row.dmarc_policy);
+        const result = evaluateSpoofable(
+          row.spf,
+          row.dmarc_policy,
+          row.has_mx,
+          row.has_a,
+          row.has_aaaa
+        );
         return `
           <tr>
             <td>${escapeHtml(row.hostname || "-")}</td>
@@ -1277,13 +1328,60 @@ async function refreshJobs() {
   }
 }
 
-async function purgeJobs() {
+async function purgeJobsData() {
+  if (
+    !window.confirm(
+      "Purge all jobs and results? This action cannot be undone."
+    )
+  ) {
+    return;
+  }
   try {
-    await apiRequest("/jobs/purge", { method: "POST" });
-    log("Jobs history purged.");
-    await Promise.all([refreshJobs(), loadDashboard()]);
+    const data = await apiRequest("/admin/purge/jobs", { method: "POST" });
+    log(
+      `Jobs purged. Deleted scans=${data.deleted_scans ?? 0}, results=${data.deleted_results ?? 0}, diffs=${data.deleted_diffs ?? 0}.`
+    );
+    await Promise.all([refreshJobs(), loadDashboard(), refreshTargets()]);
   } catch (error) {
     log(`Jobs purge failed: ${error.message}`);
+  }
+}
+
+async function purgeTargetsData() {
+  if (
+    !window.confirm(
+      "Purge all targets/hosts and all related scans, DNS data, and diffs? This action cannot be undone."
+    )
+  ) {
+    return;
+  }
+  try {
+    const data = await apiRequest("/admin/purge/targets", { method: "POST" });
+    log(
+      `Targets purged. Deleted targets=${data.deleted_targets ?? 0}, scans=${data.deleted_scans ?? 0}, dns=${data.deleted_dns ?? 0}, results=${data.deleted_results ?? 0}, diffs=${data.deleted_diffs ?? 0}.`
+    );
+    await Promise.all([refreshTargets(), refreshJobs(), loadDashboard(), refreshSpoofable()]);
+    ui.dnsPanel.innerHTML = "<p class='muted'>Select a host to view DNS details.</p>";
+  } catch (error) {
+    log(`Targets purge failed: ${error.message}`);
+  }
+}
+
+async function purgeDnsData() {
+  if (
+    !window.confirm(
+      "Purge DNS data cache for all targets? Targets and scan jobs remain."
+    )
+  ) {
+    return;
+  }
+  try {
+    const data = await apiRequest("/admin/purge/dns", { method: "POST" });
+    log(`DNS cache purged. Deleted dns records=${data.deleted_dns ?? 0}.`);
+    await Promise.all([refreshSpoofable(), refreshTargets(), loadDashboard()]);
+    ui.dnsPanel.innerHTML = "<p class='muted'>DNS data purged. Select a host to trigger fresh lookup.</p>";
+  } catch (error) {
+    log(`DNS purge failed: ${error.message}`);
   }
 }
 
@@ -1477,6 +1575,7 @@ async function saveSchedulerConfig(event) {
 }
 
 function renderUsers(users) {
+  userIndex.clear();
   if (!Array.isArray(users) || users.length === 0) {
     ui.usersBody.innerHTML =
       "<tr><td colspan='6' class='muted'>No users found</td></tr>";
@@ -1485,8 +1584,10 @@ function renderUsers(users) {
 
   ui.usersBody.innerHTML = users
     .map((row) => {
+      const userId = String(row.id || "");
       const username = String(row.username || "");
       const canDelete = Boolean(username) && username !== currentUsername;
+      userIndex.set(userId, row);
       return `
       <tr>
         <td>${escapeHtml(username)}</td>
@@ -1495,10 +1596,13 @@ function renderUsers(users) {
         <td>${escapeHtml(row.email || "")}</td>
         <td>${row.is_active ? "Active" : "Disabled"}</td>
         <td class="users-actions">
+          <button type="button" class="edit-user-btn" data-user-id="${escapeHtml(
+            userId
+          )}">Edit</button>
           ${
             canDelete
               ? `<button type="button" class="delete-user-btn" data-user-id="${escapeHtml(
-                  row.id || ""
+                  userId
                 )}" data-username="${escapeHtml(username)}">Delete</button>`
               : "<span class='muted'>Current user</span>"
           }
@@ -1507,6 +1611,27 @@ function renderUsers(users) {
     `
     })
     .join("");
+}
+
+function closeEditUserPanel() {
+  ui.editUserPanel.classList.add("hidden");
+  ui.editUserForm.reset();
+  ui.editUserId.value = "";
+}
+
+function openEditUserPanel(userId) {
+  const row = userIndex.get(String(userId || ""));
+  if (!row) {
+    log("Edit user failed: user data not found.");
+    return;
+  }
+  ui.editUserId.value = String(row.id || "");
+  ui.editUserUsername.value = String(row.username || "");
+  ui.editUserName.value = String(row.name || "");
+  ui.editUserSurname.value = String(row.surname || "");
+  ui.editUserEmail.value = String(row.email || "");
+  ui.editUserIsActive.checked = Boolean(row.is_active);
+  ui.editUserPanel.classList.remove("hidden");
 }
 
 function renderEventLogs(rows) {
@@ -1618,6 +1743,33 @@ async function deleteUser(userId, username) {
   }
 }
 
+async function saveUserEdit(event) {
+  event.preventDefault();
+  const userId = ui.editUserId.value.trim();
+  if (!userId) {
+    log("Save user failed: user id missing.");
+    return;
+  }
+  const payload = {
+    name: ui.editUserName.value.trim(),
+    surname: ui.editUserSurname.value.trim(),
+    email: ui.editUserEmail.value.trim(),
+    is_active: Boolean(ui.editUserIsActive.checked),
+  };
+
+  try {
+    await apiRequest(`/admin/users/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    log(`User updated: ${ui.editUserUsername.value}`);
+    closeEditUserPanel();
+    await refreshUsers();
+  } catch (error) {
+    log(`Update user failed: ${error.message}`);
+  }
+}
+
 async function importTargetsCsv(event) {
   event.preventDefault();
   const file = ui.targetsCsvFile?.files?.[0];
@@ -1694,12 +1846,16 @@ ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
 ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
 ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
-ui.purgeJobsBtn.addEventListener("click", purgeJobs);
 ui.loginForm.addEventListener("submit", login);
 ui.logoutBtn.addEventListener("click", logout);
 ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
 ui.userForm.addEventListener("submit", createUser);
+ui.purgeTargetsBtn.addEventListener("click", purgeTargetsData);
+ui.purgeDnsBtn.addEventListener("click", purgeDnsData);
+ui.purgeJobsAdminBtn.addEventListener("click", purgeJobsData);
+ui.editUserForm.addEventListener("submit", saveUserEdit);
+ui.cancelEditUserBtn.addEventListener("click", closeEditUserPanel);
 ui.refreshUsersBtn.addEventListener("click", refreshUsers);
 ui.bulkTargetsForm.addEventListener("submit", importTargetsCsv);
 ui.refreshEventLogBtn.addEventListener("click", refreshEventLogs);
@@ -1712,6 +1868,11 @@ ui.adminNavToggleBtn.addEventListener("click", () => {
   ui.adminShell.classList.toggle("admin-nav-collapsed");
 });
 ui.usersBody.addEventListener("click", (event) => {
+  const editBtn = event.target.closest(".edit-user-btn");
+  if (editBtn) {
+    openEditUserPanel(editBtn.dataset.userId);
+    return;
+  }
   const deleteBtn = event.target.closest(".delete-user-btn");
   if (!deleteBtn) {
     return;
