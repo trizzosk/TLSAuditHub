@@ -1,5 +1,10 @@
 # TLSAuditHub
 
+[![CI](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml/badge.svg)](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/trizzosk/TLSAuditHub)](https://github.com/trizzosk/TLSAuditHub/releases)
+[![License](https://img.shields.io/github/license/trizzosk/TLSAuditHub)](https://github.com/trizzosk/TLSAuditHub/blob/main/LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/release/python-3120/)
+
 <img src="ui-prototype/logo.svg" alt="TLSAuditHub logo" style="max-width: 33%; width: 100%; height: auto; justify-content: center;">
 
 ## Objective
