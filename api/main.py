@@ -9,9 +9,11 @@ from auth import verify_password, create_access_token, hash_password
 from deps import get_current_admin, get_current_user
 import csv
 import os
+import smtplib
 import time
 from uuid import UUID
 from io import StringIO
+from email.message import EmailMessage
 
 app = FastAPI(title="SSLyze Scanner API")
 celery_client = Celery("api", broker="redis://redis:6379/0")
@@ -58,6 +60,78 @@ class EventLogCreate(BaseModel):
     message: str
     source: str = "ui"
     level: str = "info"
+
+
+class SmtpConfigUpdate(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = 25
+    use_starttls: bool = False
+    use_auth: bool = False
+    username: str = ""
+    password: str = ""
+    from_address: str = ""
+    recipient: str = ""
+    reply_to: str = ""
+    subject_template: str = "{finding_name}"
+    timeout_seconds: int = 15
+
+
+class ReportEmailRequest(BaseModel):
+    report_id: str
+    subject: str = ""
+
+
+REPORT_DEFINITIONS = {
+    "no_tls13": {
+        "id": "no_tls13",
+        "finding_id": "NO_TLS13",
+        "title": "Hosts Not Supporting TLS 1.3",
+        "description": (
+            "Targets where the latest completed scan reports "
+            "tls_1_3_cipher_suites.is_protocol_supported = false."
+        ),
+        "severity": "medium",
+    },
+    "legacy_ssl_enabled": {
+        "id": "legacy_ssl_enabled",
+        "finding_id": "SSLV2_OR_SSLV3_ENABLED",
+        "title": "Hosts Supporting SSLv2 Or SSLv3",
+        "description": (
+            "Targets where the latest completed scan reports SSLv2 and/or SSLv3 "
+            "as supported."
+        ),
+        "severity": "high",
+    },
+    "spf_not_strict": {
+        "id": "spf_not_strict",
+        "finding_id": "SPF_NOT_STRICT",
+        "title": "Hosts With SPF Not Set To -all",
+        "description": (
+            "Targets where DNS SPF is missing or does not end with -all."
+        ),
+        "severity": "medium",
+    },
+    "missing_hsts": {
+        "id": "missing_hsts",
+        "finding_id": "MISSING_HSTS",
+        "title": "Hosts Missing HSTS Header",
+        "description": (
+            "Targets where the latest completed scan does not include a "
+            "Strict-Transport-Security header."
+        ),
+        "severity": "medium",
+    },
+    "missing_dmarc_policy": {
+        "id": "missing_dmarc_policy",
+        "finding_id": "MISSING_OR_WEAK_DMARC_POLICY",
+        "title": "Hosts Missing DMARC Policy",
+        "description": (
+            "Targets where DMARC is missing from DNS or DMARC policy is p=none."
+        ),
+        "severity": "high",
+    },
+}
 
 
 cors_allow_origins = [
@@ -160,6 +234,50 @@ def ensure_scheduler_config_table(db):
             INSERT INTO scheduler_config
             (id, enabled, frequency, day_of_week, hour, minute, interval_minutes)
             VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
+    db.commit()
+
+
+def ensure_smtp_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS smtp_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                host TEXT NOT NULL DEFAULT '',
+                port INT NOT NULL DEFAULT 25,
+                use_starttls BOOLEAN NOT NULL DEFAULT FALSE,
+                use_auth BOOLEAN NOT NULL DEFAULT FALSE,
+                username TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
+                from_address TEXT NOT NULL DEFAULT '',
+                recipient TEXT NOT NULL DEFAULT '',
+                reply_to TEXT NOT NULL DEFAULT '',
+                subject_template TEXT NOT NULL DEFAULT '{finding_name}',
+                timeout_seconds INT NOT NULL DEFAULT 15,
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT smtp_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO smtp_config
+            (
+              id, enabled, host, port, use_starttls, use_auth, username, password,
+              from_address, recipient, reply_to, subject_template, timeout_seconds
+            )
+            VALUES
+            (
+              1, FALSE, '', 25, FALSE, FALSE, '', '',
+              '', '', '', '{finding_name}', 15
+            )
             ON CONFLICT (id) DO NOTHING
             """
         )
@@ -460,12 +578,47 @@ def read_scheduler_config(db):
     }
 
 
+def read_smtp_config(db):
+    ensure_smtp_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT
+              enabled, host, port, use_starttls, use_auth, username, password,
+              from_address, recipient, reply_to, subject_template, timeout_seconds,
+              updated_at
+            FROM smtp_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    data = dict(row._mapping)
+    return {
+        "enabled": bool(data["enabled"]),
+        "host": (data["host"] or "").strip(),
+        "port": int(data["port"] or 25),
+        "use_starttls": bool(data["use_starttls"]),
+        "use_auth": bool(data["use_auth"]),
+        "username": (data["username"] or "").strip(),
+        "has_password": bool(data["password"]),
+        "from_address": (data["from_address"] or "").strip(),
+        "recipient": (data["recipient"] or "").strip(),
+        "reply_to": (data["reply_to"] or "").strip(),
+        "subject_template": (
+            data["subject_template"] or "{finding_name}"
+        ).strip(),
+        "timeout_seconds": int(data["timeout_seconds"] or 15),
+        "updated_at": data.get("updated_at"),
+    }
+
+
 @app.on_event("startup")
 def init_proxy_config():
     db = SessionLocal()
     try:
         ensure_proxy_config_table(db)
         ensure_scheduler_config_table(db)
+        ensure_smtp_config_table(db)
         ensure_target_dns_table(db)
         ensure_users_table(db)
         ensure_event_logs_table(db)
@@ -1103,6 +1256,116 @@ def update_scheduler_config(
         db.close()
 
 
+def _looks_like_email(value: str) -> bool:
+    text_value = (value or "").strip()
+    return "@" in text_value and "." in text_value.split("@", 1)[-1]
+
+
+@app.get("/config/smtp")
+def get_smtp_config(user=Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        return read_smtp_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/smtp")
+def update_smtp_config(payload: SmtpConfigUpdate, user=Depends(get_current_admin)):
+    host = (payload.host or "").strip()
+    from_address = (payload.from_address or "").strip()
+    recipient = (payload.recipient or "").strip()
+    reply_to = (payload.reply_to or "").strip()
+    subject_template = (payload.subject_template or "").strip() or "{finding_name}"
+
+    if payload.port < 1 or payload.port > 65535:
+        raise HTTPException(status_code=400, detail="port must be 1-65535")
+    if payload.timeout_seconds < 3 or payload.timeout_seconds > 120:
+        raise HTTPException(
+            status_code=400, detail="timeout_seconds must be 3-120"
+        )
+    if not host:
+        raise HTTPException(status_code=400, detail="host is required")
+    if not from_address or not recipient or not reply_to:
+        raise HTTPException(
+            status_code=400,
+            detail="from_address, recipient, and reply_to are required",
+        )
+    if not _looks_like_email(from_address):
+        raise HTTPException(status_code=400, detail="from_address is invalid")
+    if not _looks_like_email(recipient):
+        raise HTTPException(status_code=400, detail="recipient is invalid")
+    if not _looks_like_email(reply_to):
+        raise HTTPException(status_code=400, detail="reply_to is invalid")
+
+    db = SessionLocal()
+    try:
+        ensure_smtp_config_table(db)
+        current = db.execute(
+            text(
+                """
+                SELECT password FROM smtp_config
+                WHERE id = 1
+                """
+            )
+        ).fetchone()
+        current_password = current._mapping["password"] if current else ""
+        new_password = (
+            payload.password
+            if payload.password not in (None, "")
+            else current_password
+        )
+
+        if payload.use_auth and not (payload.username or "").strip():
+            raise HTTPException(
+                status_code=400, detail="username is required when use_auth=true"
+            )
+        if payload.use_auth and not new_password:
+            raise HTTPException(
+                status_code=400, detail="password is required when use_auth=true"
+            )
+
+        db.execute(
+            text(
+                """
+                UPDATE smtp_config
+                SET enabled=:enabled,
+                    host=:host,
+                    port=:port,
+                    use_starttls=:use_starttls,
+                    use_auth=:use_auth,
+                    username=:username,
+                    password=:password,
+                    from_address=:from_address,
+                    recipient=:recipient,
+                    reply_to=:reply_to,
+                    subject_template=:subject_template,
+                    timeout_seconds=:timeout_seconds,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {
+                "enabled": bool(payload.enabled),
+                "host": host,
+                "port": int(payload.port),
+                "use_starttls": bool(payload.use_starttls),
+                "use_auth": bool(payload.use_auth),
+                "username": (payload.username or "").strip(),
+                "password": new_password,
+                "from_address": from_address,
+                "recipient": recipient,
+                "reply_to": reply_to,
+                "subject_template": subject_template,
+                "timeout_seconds": int(payload.timeout_seconds),
+            },
+        )
+        db.commit()
+        return read_smtp_config(db)
+    finally:
+        db.close()
+
+
 def _purge_jobs_data(db):
     results_row = db.execute(
         text("SELECT COUNT(*) AS c FROM scan_results")
@@ -1128,6 +1391,284 @@ def _purge_jobs_data(db):
         "deleted_results": deleted_results,
         "deleted_diffs": deleted_diffs,
     }
+
+
+def _latest_completed_scans(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT DISTINCT ON (s.target_id)
+              s.id AS scan_id,
+              s.target_id,
+              t.hostname,
+              t.port,
+              COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+            FROM scans s
+            JOIN targets t ON t.id = s.target_id
+            WHERE s.status = 'completed'
+            ORDER BY
+              s.target_id,
+              s.finished_at DESC NULLS LAST,
+              s.started_at DESC NULLS LAST
+            """
+        )
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def _load_results_for_scans(db, scan_ids: list[str], plugins: list[str]):
+    if not scan_ids:
+        return {}
+
+    rows = db.execute(
+        text(
+            """
+            SELECT scan_id, plugin, result
+            FROM scan_results
+            WHERE scan_id = ANY(:scan_ids)
+              AND plugin = ANY(:plugins)
+            """
+        ),
+        {"scan_ids": scan_ids, "plugins": plugins},
+    ).fetchall()
+
+    grouped = {}
+    for row in rows:
+        data = dict(row._mapping)
+        scan_id = str(data["scan_id"])
+        grouped.setdefault(scan_id, {})
+        grouped[scan_id][data["plugin"]] = data["result"] or {}
+    return grouped
+
+
+def _build_no_tls13_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["tls_1_3_cipher_suites"],
+    )
+    report = REPORT_DEFINITIONS["no_tls13"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        tls13 = (by_scan.get(scan_id) or {}).get("tls_1_3_cipher_suites") or {}
+        is_supported = bool(tls13.get("is_protocol_supported"))
+        if is_supported:
+            continue
+        accepted = tls13.get("accepted_cipher_suites") or []
+        proof = (
+            f"tls_1_3_cipher_suites.is_protocol_supported={is_supported}; "
+            f"accepted_cipher_suites={len(accepted)}"
+        )
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_legacy_ssl_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["ssl_2_0_cipher_suites", "ssl_3_0_cipher_suites"],
+    )
+    report = REPORT_DEFINITIONS["legacy_ssl_enabled"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        scan_results = by_scan.get(scan_id) or {}
+        ssl2 = scan_results.get("ssl_2_0_cipher_suites") or {}
+        ssl3 = scan_results.get("ssl_3_0_cipher_suites") or {}
+        ssl2_supported = bool(ssl2.get("is_protocol_supported"))
+        ssl3_supported = bool(ssl3.get("is_protocol_supported"))
+        if not ssl2_supported and not ssl3_supported:
+            continue
+        ssl2_count = len(ssl2.get("accepted_cipher_suites") or [])
+        ssl3_count = len(ssl3.get("accepted_cipher_suites") or [])
+        proof = (
+            f"ssl2_supported={ssl2_supported} (accepted={ssl2_count}); "
+            f"ssl3_supported={ssl3_supported} (accepted={ssl3_count})"
+        )
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_spf_not_strict_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status = 'completed'
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["spf_not_strict"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        spf = str(dns_data.get("spf") or "").strip()
+        if spf and spf.lower().endswith("-all"):
+            continue
+        reason = (
+            "spf missing"
+            if not spf
+            else "spf does not end with -all"
+        )
+        proof = f"{reason}; spf_record={spf or '(missing)'}"
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
+def _build_missing_hsts_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["http_headers"],
+    )
+    report = REPORT_DEFINITIONS["missing_hsts"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        headers = (by_scan.get(scan_id) or {}).get("http_headers") or {}
+        hsts = headers.get("strict_transport_security")
+        if hsts:
+            continue
+        proof = (
+            "http_headers.strict_transport_security is missing; "
+            f"http_status_code={headers.get('http_status_code')}"
+        )
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_missing_dmarc_policy_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status = 'completed'
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["missing_dmarc_policy"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        dmarc = dns_data.get("dmarc") or {}
+        dmarc_record = str(dmarc.get("record") or "").strip()
+        dmarc_policy = str(dmarc.get("policy") or "").strip().lower()
+        missing_record = not dmarc_record
+        weak_policy = dmarc_policy in {"", "none"}
+        if not (missing_record or weak_policy):
+            continue
+        reason = "dmarc record missing" if missing_record else "dmarc policy is p=none"
+        proof = (
+            f"{reason}; dmarc_record={dmarc_record or '(missing)'}; "
+            f"dmarc_policy={dmarc_policy or '(missing)'}"
+        )
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
+def _build_report_items(db, report_id: str):
+    if report_id == "no_tls13":
+        return _build_no_tls13_items(db)
+    if report_id == "legacy_ssl_enabled":
+        return _build_legacy_ssl_items(db)
+    if report_id == "spf_not_strict":
+        return _build_spf_not_strict_items(db)
+    if report_id == "missing_hsts":
+        return _build_missing_hsts_items(db)
+    if report_id == "missing_dmarc_policy":
+        return _build_missing_dmarc_policy_items(db)
+    raise HTTPException(status_code=400, detail="Unsupported report_id")
+
+
+def _render_subject(template: str, report_meta: dict, row_count: int):
+    clean = (template or "{finding_name}").strip() or "{finding_name}"
+    return (
+        clean.replace("{finding_name}", report_meta.get("title") or "")
+        .replace("{report_id}", report_meta.get("id") or "")
+        .replace("{row_count}", str(row_count))
+    )
 
 
 @app.get("/jobs")
@@ -1180,6 +1721,168 @@ def list_jobs(
         }
     finally:
         db.close()
+
+
+@app.get("/reports/catalog")
+def reports_catalog(user=Depends(get_current_user)):
+    return {"items": list(REPORT_DEFINITIONS.values())}
+
+
+@app.get("/reports/findings")
+def report_findings(
+    report_id: str,
+    limit: int = 0,
+    offset: int = 0,
+    user=Depends(get_current_user),
+):
+    report_meta = REPORT_DEFINITIONS.get(report_id)
+    if not report_meta:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "report_id must be one of: "
+                + ", ".join(sorted(REPORT_DEFINITIONS.keys()))
+            ),
+        )
+
+    db = SessionLocal()
+    try:
+        rows = _build_report_items(db, report_id)
+        total = len(rows)
+        start = max(0, int(offset or 0))
+        if limit and limit > 0:
+            end = start + int(limit)
+            page_items = rows[start:end]
+        else:
+            page_items = rows[start:]
+
+        return {
+            "report": report_meta,
+            "items": page_items,
+            "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/reports/email")
+def send_report_email(payload: ReportEmailRequest, user=Depends(get_current_admin)):
+    report_id = (payload.report_id or "").strip()
+    report_meta = REPORT_DEFINITIONS.get(report_id)
+    if not report_meta:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "report_id must be one of: "
+                + ", ".join(sorted(REPORT_DEFINITIONS.keys()))
+            ),
+        )
+
+    db = SessionLocal()
+    try:
+        smtp_cfg = read_smtp_config(db)
+        if not smtp_cfg["enabled"]:
+            raise HTTPException(
+                status_code=400,
+                detail="SMTP export is disabled. Enable it in Admin > SMTP.",
+            )
+        rows = _build_report_items(db, report_id)
+    finally:
+        db.close()
+
+    subject = (
+        (payload.subject or "").strip()
+        or _render_subject(
+            smtp_cfg["subject_template"], report_meta, len(rows)
+        )
+    )
+
+    csv_buffer = StringIO()
+    writer = csv.writer(csv_buffer)
+    writer.writerow(
+        [
+            "host_target",
+            "finding_id",
+            "severity",
+            "finding_proof",
+            "scan_timestamp_utc",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.get("host_target") or "",
+                row.get("finding_id") or "",
+                row.get("severity") or "",
+                row.get("finding_proof") or "",
+                row.get("scan_timestamp_utc") or "",
+            ]
+        )
+
+    body = (
+        f"Report: {report_meta['title']}\n"
+        f"Description: {report_meta['description']}\n"
+        f"Total findings: {len(rows)}\n\n"
+        f"Generated by TLSAuditHub user: {user['username']}\n"
+        "CSV attachment included.\n"
+    )
+
+    message = EmailMessage()
+    message["From"] = smtp_cfg["from_address"]
+    message["To"] = smtp_cfg["recipient"]
+    message["Reply-To"] = smtp_cfg["reply_to"]
+    message["Subject"] = subject
+    message.set_content(body)
+    message.add_attachment(
+        csv_buffer.getvalue().encode("utf-8"),
+        maintype="text",
+        subtype="csv",
+        filename=f"{report_id}_findings.csv",
+    )
+
+    db = SessionLocal()
+    try:
+        creds_row = db.execute(
+            text(
+                """
+                SELECT username, password
+                FROM smtp_config
+                WHERE id = 1
+                """
+            )
+        ).fetchone()
+        creds = dict(creds_row._mapping) if creds_row else {}
+    finally:
+        db.close()
+
+    try:
+        with smtplib.SMTP(
+            smtp_cfg["host"],
+            smtp_cfg["port"],
+            timeout=smtp_cfg["timeout_seconds"],
+        ) as smtp:
+            smtp.ehlo()
+            if smtp_cfg["use_starttls"]:
+                smtp.starttls()
+                smtp.ehlo()
+            if smtp_cfg["use_auth"]:
+                smtp.login(
+                    (creds.get("username") or "").strip(),
+                    creds.get("password") or "",
+                )
+            smtp.send_message(message)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"SMTP send failed: {exc}"
+        ) from exc
+
+    return {
+        "status": "sent",
+        "report_id": report_id,
+        "recipient": smtp_cfg["recipient"],
+        "subject": subject,
+        "rows": len(rows),
+    }
 
 
 @app.post("/jobs/purge")

@@ -34,9 +34,146 @@ If your network requires an outbound HTTP proxy, set the standard proxy environm
    - `NO_PROXY=localhost,127.0.0.1,postgres,redis`
 2. Run `docker compose up`.
 
+#### Proxy variable details
+- `HTTP_PROXY`: proxy URL used for outbound plain HTTP connections.
+- `HTTPS_PROXY`: proxy URL used for outbound HTTPS/TLS connections.
+- `NO_PROXY`: comma-separated hosts/domains/IP ranges that must bypass the proxy.
+
+Recommended `NO_PROXY` entries for this stack:
+- `localhost,127.0.0.1,postgres,redis,api,worker,scheduler`
+
+If your organization uses uppercase-only or lowercase-only variables, keep both forms aligned when possible (`HTTP_PROXY` + `http_proxy`, `HTTPS_PROXY` + `https_proxy`, `NO_PROXY` + `no_proxy`) to avoid runtime differences across tools.
+
+### Corporate DNS tuning (internal + forwarded resolution)
+If your environment uses internal DNS with forwarding to external resolvers, you can tune DNS lookup behavior for the worker:
+
+- `DNS_NAMESERVERS` comma-separated resolvers to force (example: `10.10.1.53,10.10.1.54`)
+- `DNS_LIFETIME_SECONDS` total resolver lifetime per query (default `8`)
+- `DNS_TIMEOUT_SECONDS` per-attempt timeout (default `3`)
+- `DNS_ATTEMPTS` max attempts per record query (default `2`)
+- `DNS_USE_SEARCH` enable resolver search behavior (`true`/`false`, default `true`)
+- `WHOIS_SKIP_SUFFIXES` comma-separated suffixes to skip WHOIS for internal/private domains  
+  (default: `.internal,.local,.corp,.lan,.home,localhost`)
+
+Example `.env`:
+
+```env
+DNS_NAMESERVERS=10.10.1.53,10.10.1.54
+DNS_LIFETIME_SECONDS=10
+DNS_TIMEOUT_SECONDS=4
+DNS_ATTEMPTS=3
+DNS_USE_SEARCH=true
+WHOIS_SKIP_SUFFIXES=.internal,.local,.corp,.lan,.home,localhost
+```
+
+### Report export via SMTP
+TLSAuditHub can export report findings directly by email (CSV attachment) using an internal SMTP relay.
+
+- Supports anonymous SMTP and authenticated SMTP.
+- SMTP settings are managed in **Admin -> SMTP**.
+- Required fields:
+  - `From Address`
+  - `Recipient`
+  - `Reply-To`
+- Subject is template-based and customizable. Default template:
+  - `{finding_name}`
+
+Supported subject placeholders:
+- `{finding_name}`
+- `{report_id}`
+- `{row_count}`
+
+Usage flow:
+1. Configure SMTP in **Admin -> SMTP** and save.
+2. Open **Reports**, pick report type, click **Refresh**.
+3. Click **Send Email**.
+4. Optionally set a one-time subject override (or leave empty to use template).
+
 ### Run everything (API + workers + UI)
 1. `docker compose up`
 2. Open `http://localhost:5173`
+
+### Run behind reverse proxy with SSL offload (single exposed port)
+Use this model when clients cannot reach backend port `8000` directly (for example, VLAN/firewall restrictions).
+
+- Expose only `443` externally on the reverse proxy.
+- Route UI requests (`/`) to the UI service.
+- Route API requests (`/api/...`) to the API service.
+- Keep backend port `8000` private/internal only.
+
+#### 1) Make UI call API through same origin path
+Set UI API base URL to `"/api"` (instead of `http://localhost:8000`) so browsers call the reverse proxy path and not local loopback.
+
+#### 2) Bind container ports locally on the host
+Prefer loopback bindings in Compose when reverse proxy is on the same host:
+
+- UI: `127.0.0.1:5173:5173`
+- API: `127.0.0.1:8000:8000`
+
+#### 3) Nginx example (SSL offload + path routing)
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name tlsaudithub.example.com;
+
+    ssl_certificate     /etc/ssl/certs/tlsaudithub.crt;
+    ssl_certificate_key /etc/ssl/private/tlsaudithub.key;
+
+    # API under /api/*
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # UI under /
+    location / {
+        proxy_pass http://127.0.0.1:5173/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+#### 4) Apache2 example (SSL offload + path routing)
+Enable required modules:
+
+- `a2enmod ssl proxy proxy_http headers`
+
+VirtualHost example:
+
+```apache
+<VirtualHost *:443>
+    ServerName tlsaudithub.example.com
+
+    SSLEngine on
+    SSLCertificateFile /etc/ssl/certs/tlsaudithub.crt
+    SSLCertificateKeyFile /etc/ssl/private/tlsaudithub.key
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+
+    # API under /api/*
+    ProxyPass        /api/ http://127.0.0.1:8000/
+    ProxyPassReverse /api/ http://127.0.0.1:8000/
+
+    # UI under /
+    ProxyPass        / http://127.0.0.1:5173/
+    ProxyPassReverse / http://127.0.0.1:5173/
+</VirtualHost>
+```
+
+#### 5) Result
+Clients use only:
+
+- `https://tlsaudithub.example.com/` for UI
+- `https://tlsaudithub.example.com/api/...` for API
+
+No direct client access to `:8000` is required.
 
 ### Default admin account (initial run)
 - Username: `Adm$n`
@@ -56,6 +193,15 @@ Change this password immediately after first login.
 - The UI presents only the login form until authenticated.
 - The Spoofable report uses stored DNS data (SPF/DMARC) per target to classify spoofing risk.
 - DNS data is collected in the background when a target is added.
+
+## Disclaimer
+TLSAuditHub is provided "as is", without warranties of any kind, express or implied, including (without limitation) warranties of merchantability, fitness for a particular purpose, and non-infringement.
+
+The authors and contributors make no guarantee that scan results are complete, accurate, or suitable for operational, legal, compliance, or security decisions. Findings may include false positives and false negatives.
+
+By using this software, you accept full responsibility for validating all outputs before acting on them and for any changes made in your environment.
+
+To the maximum extent permitted by applicable law, the authors and contributors are not liable for any direct, indirect, incidental, special, consequential, or punitive damages, including but not limited to service interruption, data loss, security incidents, compliance failures, financial loss, or other damages arising from the use of, or inability to use, this tool.
 
 ## Acknowledgments
 - Kudos to the SSLyze maintainers for building and maintaining a robust TLS analysis tool that this project relies on.

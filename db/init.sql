@@ -102,6 +102,37 @@ VALUES (1, TRUE, 'daily', 1, 2, 0, 1440)
 ON CONFLICT (id)
 DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS smtp_config (
+    id INT PRIMARY KEY DEFAULT 1,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    host TEXT NOT NULL DEFAULT '',
+    port INT NOT NULL DEFAULT 25,
+    use_starttls BOOLEAN NOT NULL DEFAULT FALSE,
+    use_auth BOOLEAN NOT NULL DEFAULT FALSE,
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    from_address TEXT NOT NULL DEFAULT '',
+    recipient TEXT NOT NULL DEFAULT '',
+    reply_to TEXT NOT NULL DEFAULT '',
+    subject_template TEXT NOT NULL DEFAULT '{finding_name}',
+    timeout_seconds INT NOT NULL DEFAULT 15,
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    CONSTRAINT smtp_config_singleton CHECK (id = 1)
+);
+
+INSERT INTO smtp_config
+(
+    id, enabled, host, port, use_starttls, use_auth, username, password,
+    from_address, recipient, reply_to, subject_template, timeout_seconds
+)
+VALUES
+(
+    1, FALSE, '', 25, FALSE, FALSE, '', '',
+    '', '', '', '{finding_name}', 15
+)
+ON CONFLICT (id)
+DO NOTHING;
+
 INSERT INTO users (username, password_hash, is_active, is_admin)
 VALUES (
     'Adm$n',

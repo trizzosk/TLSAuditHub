@@ -31,6 +31,17 @@ const ui = {
   spoofablePrevBtn: document.getElementById("spoofablePrevBtn"),
   spoofableNextBtn: document.getElementById("spoofableNextBtn"),
   spoofablePageInfo: document.getElementById("spoofablePageInfo"),
+  refreshReportsBtn: document.getElementById("refreshReportsBtn"),
+  sendReportsEmailBtn: document.getElementById("sendReportsEmailBtn"),
+  exportReportsCsvBtn: document.getElementById("exportReportsCsvBtn"),
+  exportReportsPdfBtn: document.getElementById("exportReportsPdfBtn"),
+  reportTypeSelect: document.getElementById("reportTypeSelect"),
+  reportDescription: document.getElementById("reportDescription"),
+  reportsBody: document.getElementById("reportsBody"),
+  reportsPageSize: document.getElementById("reportsPageSize"),
+  reportsPrevBtn: document.getElementById("reportsPrevBtn"),
+  reportsNextBtn: document.getElementById("reportsNextBtn"),
+  reportsPageInfo: document.getElementById("reportsPageInfo"),
   refreshJobsBtn: document.getElementById("refreshJobsBtn"),
   jobsBody: document.getElementById("jobsBody"),
   jobsPageSize: document.getElementById("jobsPageSize"),
@@ -58,6 +69,21 @@ const ui = {
   schedulerIntervalWrap: document.getElementById("schedulerIntervalWrap"),
   schedulerLastRunInfo: document.getElementById("schedulerLastRunInfo"),
   reloadSchedulerBtn: document.getElementById("reloadSchedulerBtn"),
+  smtpForm: document.getElementById("smtpForm"),
+  smtpEnabled: document.getElementById("smtpEnabled"),
+  smtpHost: document.getElementById("smtpHost"),
+  smtpPort: document.getElementById("smtpPort"),
+  smtpTimeoutSeconds: document.getElementById("smtpTimeoutSeconds"),
+  smtpUseStarttls: document.getElementById("smtpUseStarttls"),
+  smtpUseAuth: document.getElementById("smtpUseAuth"),
+  smtpAuthWrap: document.getElementById("smtpAuthWrap"),
+  smtpUsername: document.getElementById("smtpUsername"),
+  smtpPassword: document.getElementById("smtpPassword"),
+  smtpFromAddress: document.getElementById("smtpFromAddress"),
+  smtpRecipient: document.getElementById("smtpRecipient"),
+  smtpReplyTo: document.getElementById("smtpReplyTo"),
+  smtpSubjectTemplate: document.getElementById("smtpSubjectTemplate"),
+  reloadSmtpBtn: document.getElementById("reloadSmtpBtn"),
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
   bulkTargetsForm: document.getElementById("bulkTargetsForm"),
   targetsCsvFile: document.getElementById("targetsCsvFile"),
@@ -106,8 +132,10 @@ const pagination = {
   targets: { page: 1, pageSize: 10, total: 0 },
   jobs: { page: 1, pageSize: 10, total: 0 },
   spoofable: { page: 1, pageSize: 10, total: 0 },
+  reports: { page: 1, pageSize: 10, total: 0 },
   eventLogs: { page: 1, pageSize: 10, total: 0 },
 };
+let currentReportMeta = null;
 let activeAdminPage = "adminUsersPage";
 const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
@@ -265,12 +293,24 @@ function logout() {
   log("Logged out.");
 }
 
+function showResultsSelectionPrompt() {
+  ui.selectedResultScanId.textContent = "";
+  ui.jobResultsPanel.classList.add("muted");
+  ui.jobResultsPanel.innerHTML = `
+    <p class="mb-2">No job is selected yet.</p>
+    <button type="button" class="open-jobs-btn btn btn-sm btn-outline-primary">
+      Go to Jobs
+    </button>
+  `;
+}
+
 function activateView(viewId) {
   const viewNames = {
     authView: "Login",
     dashboardView: "Dashboard",
     targetsView: "Hosts / Targets",
     spoofableView: "Spoofable",
+    reportsView: "Reports",
     jobsView: "Jobs",
     resultsView: "Results",
     adminView: "Admin",
@@ -295,6 +335,16 @@ function activateView(viewId) {
   });
 
   ui.viewTitle.textContent = viewNames[viewId] || "Dashboard";
+
+  if (
+    viewId === "resultsView" &&
+    !ui.selectedResultScanId.textContent.trim()
+  ) {
+    showResultsSelectionPrompt();
+  }
+  if (viewId === "reportsView") {
+    refreshReports();
+  }
 
   if (viewId === "adminView") {
     activateAdminPage(activeAdminPage);
@@ -337,14 +387,23 @@ function activateAdminPage(pageId) {
       : "Admin";
   }
 
+  if (resolvedPageId === "adminProxyPage") {
+    loadProxyConfig();
+  } else if (resolvedPageId === "adminSchedulerPage") {
+    loadSchedulerConfig();
+  } else if (resolvedPageId === "adminSmtpPage") {
+    loadSmtpConfig();
+  } else if (resolvedPageId === "adminUsersPage") {
+    refreshUsers();
+  } else if (resolvedPageId === "adminLogPage") {
+    refreshEventLogs();
+  }
+
   if (ui.adminShell && isMobileAdminLayout()) {
     ui.adminShell.classList.add("admin-nav-collapsed");
     updateAdminNavToggleState();
   }
 
-  if (resolvedPageId === "adminLogPage") {
-    refreshEventLogs();
-  }
 }
 
 function fmtDate(value) {
@@ -1129,6 +1188,219 @@ function renderSpoofableList(items) {
     .join("");
 }
 
+function renderReportRows(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    ui.reportsBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>No findings for selected report.</td></tr>";
+    return;
+  }
+
+  ui.reportsBody.innerHTML = items
+    .map(
+      (row) => `
+      <tr>
+        <td class="tiny-mono">${escapeHtml(row.host_target || "-")}</td>
+        <td>${escapeHtml(row.finding_id || "-")}</td>
+        <td>${sevBadge(row.severity || "-", row.severity === "high" ? "bad" : row.severity === "medium" ? "warn" : "good")}</td>
+        <td class="tiny-mono">${escapeHtml(row.finding_proof || "-")}</td>
+        <td>${escapeHtml(fmtDate(row.scan_timestamp_utc))}</td>
+      </tr>
+    `
+    )
+    .join("");
+}
+
+async function loadAllReportItems(reportId) {
+  const query = new URLSearchParams({
+    report_id: String(reportId || ""),
+    limit: "0",
+    offset: "0",
+  });
+  return apiRequest(`/reports/findings?${query.toString()}`, {
+    method: "GET",
+  });
+}
+
+async function refreshReports() {
+  try {
+    const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    pagination.reports.pageSize = getPageSize(ui.reportsPageSize, 10);
+    const limit = pagination.reports.pageSize;
+    const offset = limit > 0 ? (pagination.reports.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      report_id: reportId,
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/reports/findings?${query.toString()}`, {
+      method: "GET",
+    });
+    currentReportMeta = data.report || null;
+    if (ui.reportDescription) {
+      ui.reportDescription.textContent =
+        currentReportMeta?.description || "No report description available.";
+    }
+    pagination.reports.total = data.total ?? 0;
+    updatePaginationUI("reports", {
+      prevBtn: ui.reportsPrevBtn,
+      nextBtn: ui.reportsNextBtn,
+      pageInfo: ui.reportsPageInfo,
+    });
+    renderReportRows(data.items || []);
+    log(
+      `Loaded report '${reportId}' (${Array.isArray(data.items) ? data.items.length : 0} rows).`
+    );
+  } catch (error) {
+    ui.reportsBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>Failed to load report.</td></tr>";
+    log(`Report load failed: ${error.message}`);
+  }
+}
+
+async function exportReportsCsv() {
+  try {
+    const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    const data = await loadAllReportItems(reportId);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      log("Report CSV export skipped: no findings.");
+      return;
+    }
+    const title = data.report?.title || reportId;
+    const lines = [];
+    lines.push([`Report`, title, "", "", ""].map(escapeCsv).join(","));
+    lines.push(
+      ["Host / Target", "Finding ID", "Severity", "Finding Proof", "Scan Timestamp (UTC)"]
+        .map(escapeCsv)
+        .join(",")
+    );
+    items.forEach((row) => {
+      lines.push(
+        [
+          row.host_target || "-",
+          row.finding_id || "-",
+          row.severity || "-",
+          row.finding_proof || "-",
+          row.scan_timestamp_utc || "-",
+        ]
+          .map(escapeCsv)
+          .join(",")
+      );
+    });
+    const filename = `${reportId}_report_${exportTimestamp()}.csv`;
+    downloadTextFile(lines.join("\n"), filename, "text/csv;charset=utf-8");
+    log(`Report CSV exported (${items.length} rows).`);
+  } catch (error) {
+    log(`Report CSV export failed: ${error.message}`);
+  }
+}
+
+async function exportReportsPdf() {
+  try {
+    const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    const data = await loadAllReportItems(reportId);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      log("Report PDF export skipped: no findings.");
+      return;
+    }
+    const title = escapeHtml(data.report?.title || reportId);
+    const description = escapeHtml(data.report?.description || "");
+    const tableRows = items
+      .map(
+        (row) => `
+          <tr>
+            <td>${escapeHtml(row.host_target || "-")}</td>
+            <td>${escapeHtml(row.finding_id || "-")}</td>
+            <td>${escapeHtml(row.severity || "-")}</td>
+            <td>${escapeHtml(row.finding_proof || "-")}</td>
+            <td>${escapeHtml(row.scan_timestamp_utc || "-")}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${title}</title>
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    @media print {
+      @page { size: A4 landscape; margin: 10mm; }
+      html, body { width: 297mm; height: 210mm; }
+    }
+    body { font-family: Arial, sans-serif; margin: 0; color: #111; }
+    h1 { margin: 0 0 6px; font-size: 18px; }
+    .meta { margin: 0 0 10px; font-size: 12px; color: #333; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #999; padding: 6px; text-align: left; font-size: 10px; vertical-align: top; word-break: break-word; }
+    th { background: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  <p class="meta">${description}</p>
+  <p class="meta">Generated: ${escapeHtml(new Date().toLocaleString())} | Rows: ${items.length}</p>
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Host / Target</th>
+        <th scope="col">Finding ID</th>
+        <th scope="col">Severity</th>
+        <th scope="col">Finding Proof</th>
+        <th scope="col">Scan Timestamp (UTC)</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</body>
+</html>`;
+
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      log("Report PDF export failed: popup blocked by browser.");
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+    }, 250);
+    log(`Report PDF prepared (${items.length} rows).`);
+  } catch (error) {
+    log(`Report PDF export failed: ${error.message}`);
+  }
+}
+
+async function sendReportEmail() {
+  try {
+    const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    const subjectOverride = window.prompt(
+      "Email subject (leave empty to use SMTP template):",
+      ""
+    );
+    if (subjectOverride === null) {
+      return;
+    }
+    const data = await apiRequest("/reports/email", {
+      method: "POST",
+      body: JSON.stringify({
+        report_id: reportId,
+        subject: String(subjectOverride || "").trim(),
+      }),
+    });
+    log(
+      `Report email sent to ${data.recipient || "-"}; subject='${data.subject || "-"}'; rows=${data.rows ?? 0}.`
+    );
+  } catch (error) {
+    log(`Report email send failed: ${error.message}`);
+  }
+}
+
 async function loadAllSpoofableItems() {
   const data = await apiRequest("/dns/spoofable?limit=0&offset=0", {
     method: "GET",
@@ -1498,6 +1770,70 @@ async function saveProxyConfig(event) {
   }
 }
 
+function applySmtpAuthVisibility(useAuth) {
+  ui.smtpAuthWrap.classList.toggle("hidden", !Boolean(useAuth));
+}
+
+async function loadSmtpConfig() {
+  try {
+    const data = await apiRequest("/config/smtp", { method: "GET" });
+    ui.smtpEnabled.checked = Boolean(data.enabled);
+    ui.smtpHost.value = data.host || "";
+    ui.smtpPort.value = data.port || 25;
+    ui.smtpTimeoutSeconds.value = data.timeout_seconds || 15;
+    ui.smtpUseStarttls.checked = Boolean(data.use_starttls);
+    ui.smtpUseAuth.checked = Boolean(data.use_auth);
+    ui.smtpUsername.value = data.username || "";
+    ui.smtpPassword.value = "";
+    ui.smtpPassword.placeholder = data.has_password
+      ? "stored (leave empty to keep current)"
+      : "enter password";
+    ui.smtpFromAddress.value = data.from_address || "";
+    ui.smtpRecipient.value = data.recipient || "";
+    ui.smtpReplyTo.value = data.reply_to || "";
+    ui.smtpSubjectTemplate.value = data.subject_template || "{finding_name}";
+    applySmtpAuthVisibility(Boolean(data.use_auth));
+    log("SMTP configuration loaded.");
+  } catch (error) {
+    log(`SMTP configuration load failed: ${error.message}`);
+  }
+}
+
+async function saveSmtpConfig(event) {
+  event.preventDefault();
+  const payload = {
+    enabled: Boolean(ui.smtpEnabled.checked),
+    host: ui.smtpHost.value.trim(),
+    port: Number(ui.smtpPort.value),
+    timeout_seconds: Number(ui.smtpTimeoutSeconds.value),
+    use_starttls: Boolean(ui.smtpUseStarttls.checked),
+    use_auth: Boolean(ui.smtpUseAuth.checked),
+    username: ui.smtpUsername.value.trim(),
+    password: ui.smtpPassword.value,
+    from_address: ui.smtpFromAddress.value.trim(),
+    recipient: ui.smtpRecipient.value.trim(),
+    reply_to: ui.smtpReplyTo.value.trim(),
+    subject_template: ui.smtpSubjectTemplate.value.trim() || "{finding_name}",
+  };
+
+  try {
+    const data = await apiRequest("/config/smtp", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    ui.smtpPassword.value = "";
+    ui.smtpPassword.placeholder = data.has_password
+      ? "stored (leave empty to keep current)"
+      : "enter password";
+    applySmtpAuthVisibility(Boolean(data.use_auth));
+    log(
+      `SMTP configuration saved (${data.enabled ? "enabled" : "disabled"}, ${data.host}:${data.port}).`
+    );
+  } catch (error) {
+    log(`SMTP save failed: ${error.message}`);
+  }
+}
+
 function applySchedulerFrequencyVisibility(frequency) {
   const value = String(frequency || "daily").toLowerCase();
   const isInterval = value === "interval";
@@ -1596,10 +1932,16 @@ async function saveSchedulerConfig(event) {
           : 1440,
       }),
     });
+    const persistedFrequency = String(data.frequency || frequency).toLowerCase();
+    ui.schedulerEnabled.checked = Boolean(data.enabled);
+    ui.schedulerFrequency.value = persistedFrequency;
+    ui.schedulerDayOfWeek.value = String(data.day_of_week ?? 1);
+    ui.schedulerTime.value = toTimeValue(data.hour ?? 2, data.minute ?? 0);
+    ui.schedulerIntervalMinutes.value = String(data.interval_minutes ?? 1440);
     ui.schedulerLastRunInfo.textContent = `Last run: ${fmtDate(
       data.last_run_at
     )}`;
-    applySchedulerFrequencyVisibility(frequency);
+    applySchedulerFrequencyVisibility(persistedFrequency);
     log(
       `Scheduler configuration saved (${data.enabled ? "enabled" : "disabled"}, ${data.frequency}).`
     );
@@ -1871,6 +2213,8 @@ async function refreshAll() {
     refreshJobs(),
     refreshUsers(),
     loadProxyConfig(),
+    loadSchedulerConfig(),
+    loadSmtpConfig(),
   ]);
 }
 
@@ -1879,11 +2223,25 @@ ui.refreshTargetsBtn.addEventListener("click", refreshTargets);
 ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
 ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
 ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
+ui.refreshReportsBtn.addEventListener("click", refreshReports);
+ui.sendReportsEmailBtn.addEventListener("click", sendReportEmail);
+ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
+ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
 ui.loginForm.addEventListener("submit", login);
 ui.logoutBtn.addEventListener("click", logout);
 ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
+ui.schedulerForm.addEventListener("submit", saveSchedulerConfig);
+ui.reloadSchedulerBtn.addEventListener("click", loadSchedulerConfig);
+ui.schedulerFrequency.addEventListener("change", () => {
+  applySchedulerFrequencyVisibility(ui.schedulerFrequency.value);
+});
+ui.smtpForm.addEventListener("submit", saveSmtpConfig);
+ui.reloadSmtpBtn.addEventListener("click", loadSmtpConfig);
+ui.smtpUseAuth.addEventListener("change", () => {
+  applySmtpAuthVisibility(ui.smtpUseAuth.checked);
+});
 ui.userForm.addEventListener("submit", createUser);
 ui.purgeTargetsBtn.addEventListener("click", purgeTargetsData);
 ui.purgeDnsBtn.addEventListener("click", purgeDnsData);
@@ -1938,6 +2296,10 @@ ui.spoofablePageSize.addEventListener("change", () => {
   pagination.spoofable.page = 1;
   refreshSpoofable();
 });
+ui.reportsPageSize.addEventListener("change", () => {
+  pagination.reports.page = 1;
+  refreshReports();
+});
 ui.eventLogPageSize.addEventListener("change", () => {
   pagination.eventLogs.page = 1;
   refreshEventLogs();
@@ -1967,6 +2329,14 @@ ui.spoofableNextBtn.addEventListener("click", () => {
   pagination.spoofable.page += 1;
   refreshSpoofable();
 });
+ui.reportsPrevBtn.addEventListener("click", () => {
+  pagination.reports.page = Math.max(1, pagination.reports.page - 1);
+  refreshReports();
+});
+ui.reportsNextBtn.addEventListener("click", () => {
+  pagination.reports.page += 1;
+  refreshReports();
+});
 ui.eventLogPrevBtn.addEventListener("click", () => {
   pagination.eventLogs.page = Math.max(1, pagination.eventLogs.page - 1);
   refreshEventLogs();
@@ -1978,6 +2348,10 @@ ui.eventLogNextBtn.addEventListener("click", () => {
 
 ui.menuItems.forEach((item) => {
   item.addEventListener("click", () => activateView(item.dataset.view));
+});
+ui.reportTypeSelect.addEventListener("change", () => {
+  pagination.reports.page = 1;
+  refreshReports();
 });
 
 ui.targetsBody.addEventListener("click", (event) => {
@@ -2006,6 +2380,14 @@ ui.jobsBody.addEventListener("click", (event) => {
     return;
   }
   loadJobResults(btn.dataset.scanId);
+});
+
+ui.jobResultsPanel.addEventListener("click", (event) => {
+  const btn = event.target.closest(".open-jobs-btn");
+  if (!btn) {
+    return;
+  }
+  activateView("jobsView");
 });
 
 const persisted = loadPersistedSession();

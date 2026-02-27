@@ -11,6 +11,7 @@ from sqlalchemy import text
 from shared.database import SessionLocal
 from datetime import datetime, timedelta
 import ipaddress
+import os
 import socket
 import uuid
 import json
@@ -696,37 +697,212 @@ def _is_ip_address(hostname):
         return False
 
 
-def _resolve_records(name, rdtype):
-    try:
-        answers = dns.resolver.resolve(name, rdtype, lifetime=5)
-    except Exception:
+def _split_csv_env(value):
+    if not value:
         return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
 
-    records = []
-    for rdata in answers:
-        if rdtype == "NS":
-            records.append(str(rdata.target).rstrip("."))
-        elif rdtype == "MX":
-            records.append(
-                {
-                    "preference": int(rdata.preference),
-                    "exchange": str(rdata.exchange).rstrip("."),
-                }
-            )
-        elif rdtype == "TXT":
-            parts = []
-            if hasattr(rdata, "strings"):
-                for part in rdata.strings:
-                    if isinstance(part, bytes):
-                        parts.append(part.decode(errors="replace"))
+
+def _env_float(name, default):
+    raw = os.environ.get(name, str(default))
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _env_int(name, default, minimum=1):
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default)
+    return max(minimum, value)
+
+
+def _dns_config():
+    nameservers = _split_csv_env(os.environ.get("DNS_NAMESERVERS", ""))
+    lifetime = _env_float("DNS_LIFETIME_SECONDS", 8)
+    timeout = _env_float("DNS_TIMEOUT_SECONDS", 3)
+    attempts = _env_int("DNS_ATTEMPTS", 2, minimum=1)
+    use_search = os.environ.get("DNS_USE_SEARCH", "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    return {
+        "nameservers": nameservers,
+        "lifetime": lifetime,
+        "timeout": timeout,
+        "attempts": attempts,
+        "use_search": use_search,
+    }
+
+
+def _build_dns_resolver(cfg):
+    resolver = dns.resolver.Resolver(configure=True)
+    resolver.lifetime = cfg["lifetime"]
+    resolver.timeout = cfg["timeout"]
+    resolver.use_search_by_default = cfg["use_search"]
+    if cfg["nameservers"]:
+        resolver.nameservers = cfg["nameservers"]
+    return resolver
+
+
+def _classify_dns_error(exc):
+    if isinstance(exc, dns.resolver.NXDOMAIN):
+        return "NXDOMAIN"
+    if isinstance(exc, dns.resolver.NoAnswer):
+        return "NO_ANSWER"
+    if isinstance(exc, dns.resolver.NoNameservers):
+        return "NO_NAMESERVERS"
+    if isinstance(exc, dns.exception.Timeout):
+        return "TIMEOUT"
+    return exc.__class__.__name__.upper()
+
+
+def _resolve_records(name, rdtype, resolver, attempts):
+    last_exc = None
+    tries = max(1, int(attempts))
+    for attempt in range(1, tries + 1):
+        try:
+            answers = resolver.resolve(name, rdtype)
+            records = []
+            for rdata in answers:
+                if rdtype == "NS":
+                    records.append(str(rdata.target).rstrip("."))
+                elif rdtype == "MX":
+                    records.append(
+                        {
+                            "preference": int(rdata.preference),
+                            "exchange": str(rdata.exchange).rstrip("."),
+                        }
+                    )
+                elif rdtype == "TXT":
+                    parts = []
+                    if hasattr(rdata, "strings"):
+                        for part in rdata.strings:
+                            if isinstance(part, bytes):
+                                parts.append(part.decode(errors="replace"))
+                            else:
+                                parts.append(str(part))
                     else:
-                        parts.append(str(part))
-            else:
-                parts.append(str(rdata))
-            records.append("".join(parts))
-        else:
-            records.append(str(rdata))
-    return records
+                        parts.append(str(rdata))
+                    records.append("".join(parts))
+                else:
+                    records.append(str(rdata))
+            return records, {
+                "ok": True,
+                "error_code": "",
+                "error": "",
+                "attempts": attempt,
+                "query": {"name": name, "type": rdtype},
+            }
+        except Exception as exc:
+            last_exc = exc
+            code = _classify_dns_error(exc)
+            # Retrying NXDOMAIN/NO_ANSWER is not useful.
+            if code in {"NXDOMAIN", "NO_ANSWER"}:
+                break
+
+    return [], {
+        "ok": False,
+        "error_code": _classify_dns_error(last_exc) if last_exc else "UNKNOWN",
+        "error": str(last_exc) if last_exc else "Unknown DNS resolution error",
+        "attempts": tries,
+        "query": {"name": name, "type": rdtype},
+    }
+
+
+def _resolve_soa_for_host_or_zone(hostname, resolver, attempts):
+    host = str(hostname or "").strip().rstrip(".")
+    if not host:
+        return [], "", {
+            "ok": False,
+            "error_code": "EMPTY_HOST",
+            "error": "Hostname is empty",
+            "attempts": 0,
+            "query": {"name": "", "type": "SOA"},
+            "searched": [],
+        }
+
+    labels = [part for part in host.split(".") if part]
+    # Query host first, then parent zones until TLD boundary.
+    candidates = [
+        ".".join(labels[i:]) for i in range(0, max(len(labels) - 1, 1))
+    ]
+    searched = []
+    last_meta = None
+    for candidate in candidates:
+        searched.append(candidate)
+        records, meta = _resolve_records(candidate, "SOA", resolver, attempts)
+        last_meta = meta
+        if records:
+            meta["searched"] = searched
+            return records, candidate, meta
+        # Stop early for hard DNS failures; continue for empty-answer style results.
+        if meta["error_code"] not in {"NO_ANSWER", "NXDOMAIN"}:
+            meta["searched"] = searched
+            return [], "", meta
+
+    if not last_meta:
+        last_meta = {
+            "ok": False,
+            "error_code": "SOA_NOT_FOUND",
+            "error": "SOA not found on host or parent zones",
+            "attempts": 0,
+            "query": {"name": host, "type": "SOA"},
+        }
+    last_meta["searched"] = searched
+    return [], "", last_meta
+
+
+def _whois_skip_suffixes():
+    return [
+        s.lower()
+        for s in _split_csv_env(
+            os.environ.get(
+                "WHOIS_SKIP_SUFFIXES",
+                ".internal,.local,.corp,.lan,.home,localhost",
+            )
+        )
+    ]
+
+
+def _should_skip_whois(hostname, is_ip):
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return True, "empty_host"
+    if is_ip:
+        return True, "ip_address"
+    if "." not in host:
+        return True, "single_label_hostname"
+    for suffix in _whois_skip_suffixes():
+        if host == suffix.lstrip(".") or host.endswith(suffix):
+            return True, f"internal_suffix:{suffix}"
+    return False, ""
+
+
+def _resolve_host_ips(hostname):
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except Exception as exc:
+        return [], {
+            "ok": False,
+            "error_code": exc.__class__.__name__.upper(),
+            "error": str(exc),
+        }
+
+    addresses = []
+    seen = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0])
+        if ip in seen:
+            continue
+        seen.add(ip)
+        addresses.append(ip)
+    return addresses, {"ok": True, "error_code": "", "error": ""}
 
 
 def _extract_spf(txt_records):
@@ -755,10 +931,14 @@ def _parse_dmarc_policy(record):
 
 def _build_dns_payload(hostname):
     host = str(hostname or "").strip()
+    dns_cfg = _dns_config()
+    resolver = _build_dns_resolver(dns_cfg)
+    attempts = dns_cfg["attempts"]
     payload = {
         "hostname": host,
         "whois": {},
         "soa": [],
+        "soa_zone": "",
         "a": [],
         "aaaa": [],
         "resolved_ips": [],
@@ -766,6 +946,16 @@ def _build_dns_payload(hostname):
         "mx": [],
         "spf": "",
         "dmarc": {"record": "", "policy": "", "domain": ""},
+        "dns_meta": {
+            "config": {
+                "nameservers": dns_cfg["nameservers"],
+                "lifetime_seconds": dns_cfg["lifetime"],
+                "timeout_seconds": dns_cfg["timeout"],
+                "attempts": attempts,
+                "use_search": dns_cfg["use_search"],
+            },
+            "queries": {},
+        },
     }
 
     if not host:
@@ -774,17 +964,37 @@ def _build_dns_payload(hostname):
     is_ip = _is_ip_address(host)
 
     if not is_ip:
-        payload["soa"] = _resolve_records(host, "SOA")
-        payload["a"] = _resolve_records(host, "A")
-        payload["aaaa"] = _resolve_records(host, "AAAA")
-        payload["resolved_ips"] = _resolve_host_ips(host)
-        payload["ns"] = _resolve_records(host, "NS")
-        payload["mx"] = _resolve_records(host, "MX")
-        txt_records = _resolve_records(host, "TXT")
+        soa_records, soa_zone, soa_meta = _resolve_soa_for_host_or_zone(
+            host, resolver, attempts
+        )
+        payload["soa"] = soa_records
+        payload["soa_zone"] = soa_zone
+        payload["dns_meta"]["queries"]["soa"] = soa_meta
+
+        payload["a"], payload["dns_meta"]["queries"]["a"] = _resolve_records(
+            host, "A", resolver, attempts
+        )
+        payload["aaaa"], payload["dns_meta"]["queries"]["aaaa"] = _resolve_records(
+            host, "AAAA", resolver, attempts
+        )
+        payload["resolved_ips"], payload["dns_meta"]["queries"]["resolved_ips"] = (
+            _resolve_host_ips(host)
+        )
+        payload["ns"], payload["dns_meta"]["queries"]["ns"] = _resolve_records(
+            host, "NS", resolver, attempts
+        )
+        payload["mx"], payload["dns_meta"]["queries"]["mx"] = _resolve_records(
+            host, "MX", resolver, attempts
+        )
+        txt_records, payload["dns_meta"]["queries"]["txt"] = _resolve_records(
+            host, "TXT", resolver, attempts
+        )
         payload["spf"] = _extract_spf(txt_records)
 
         dmarc_domain = f"_dmarc.{host}"
-        dmarc_txt = _resolve_records(dmarc_domain, "TXT")
+        dmarc_txt, payload["dns_meta"]["queries"]["dmarc_txt"] = _resolve_records(
+            dmarc_domain, "TXT", resolver, attempts
+        )
         dmarc_record = _extract_dmarc(dmarc_txt)
         payload["dmarc"] = {
             "record": dmarc_record,
@@ -793,49 +1003,43 @@ def _build_dns_payload(hostname):
         }
     else:
         payload["resolved_ips"] = [host]
-
-    try:
-        whois_result = whois.whois(host)
-        payload["whois"] = {
-            "domain_name": _safe_list(getattr(whois_result, "domain_name", None)),
-            "registrar": getattr(whois_result, "registrar", None),
-            "creation_date": _safe_list(
-                getattr(whois_result, "creation_date", None)
-            ),
-            "expiration_date": _safe_list(
-                getattr(whois_result, "expiration_date", None)
-            ),
-            "updated_date": _safe_list(
-                getattr(whois_result, "updated_date", None)
-            ),
-            "name_servers": _safe_list(
-                getattr(whois_result, "name_servers", None)
-            ),
+        payload["dns_meta"]["queries"]["resolved_ips"] = {
+            "ok": True,
+            "error_code": "",
+            "error": "",
         }
-    except Exception as exc:
-        payload["whois"] = {"error": str(exc)}
+        payload["dns_meta"]["queries"]["dns"] = {
+            "ok": False,
+            "error_code": "SKIPPED_IP_TARGET",
+            "error": "DNS record queries skipped because target is an IP address",
+        }
+
+    skip_whois, skip_reason = _should_skip_whois(host, is_ip)
+    if skip_whois:
+        payload["whois"] = {"skipped": True, "reason": skip_reason}
+    else:
+        try:
+            whois_result = whois.whois(host)
+            payload["whois"] = {
+                "domain_name": _safe_list(getattr(whois_result, "domain_name", None)),
+                "registrar": getattr(whois_result, "registrar", None),
+                "creation_date": _safe_list(
+                    getattr(whois_result, "creation_date", None)
+                ),
+                "expiration_date": _safe_list(
+                    getattr(whois_result, "expiration_date", None)
+                ),
+                "updated_date": _safe_list(
+                    getattr(whois_result, "updated_date", None)
+                ),
+                "name_servers": _safe_list(
+                    getattr(whois_result, "name_servers", None)
+                ),
+            }
+        except Exception as exc:
+            payload["whois"] = {"error": str(exc)}
 
     return payload
-
-
-def _resolve_host_ips(hostname):
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except Exception:
-        return []
-
-    addresses = []
-    seen = set()
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            continue
-        ip = str(sockaddr[0])
-        if ip in seen:
-            continue
-        seen.add(ip)
-        addresses.append(ip)
-    return addresses
 
 def _parse_no_proxy_patterns(raw_patterns):
     if not raw_patterns:
