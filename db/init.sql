@@ -13,7 +13,8 @@ CREATE TABLE scans (
     target_id UUID REFERENCES targets(id),
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
-    status TEXT
+    status TEXT,
+    error_message TEXT
 );
 
 CREATE TABLE scan_results (

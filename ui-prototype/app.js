@@ -902,6 +902,19 @@ function renderJobResults(results) {
             severity: result?.supports_fallback_scsv ? "good" : "warn",
           },
         ]);
+      } else if (plugin === "scan_error") {
+        body = renderSecurityCheck(result, [
+          {
+            label: "Scan Status",
+            value: String(result?.status || "failed"),
+            severity: "bad",
+          },
+          {
+            label: "Failure Reason",
+            value: String(result?.error || "Unknown error"),
+            severity: "warn",
+          },
+        ]);
       } else {
         body = renderGenericResult(result);
       }
@@ -1123,11 +1136,16 @@ function renderJobs(jobs) {
         const hostLabel = escapeHtml(
           `${job.hostname ?? "Unknown"}:${job.port ?? "-"}`
         );
+        const status = escapeHtml(String(job.status || "-"));
+        const errorMessage = String(job.error_message || "").trim();
+        const errorNote = errorMessage
+          ? `<div class="muted tiny-mono" title="${escapeHtml(errorMessage)}">${escapeHtml(errorMessage)}</div>`
+          : "";
         return `
       <tr>
         <td>${jobId}</td>
         <td>${hostLabel}</td>
-        <td>${job.status ?? "-"}</td>
+        <td>${status}${errorNote}</td>
         <td>${fmtDate(job.started_at)}</td>
         <td>${fmtDate(job.finished_at)}</td>
         <td><button data-scan-id="${jobId}" class="view-job-btn btn btn-sm btn-outline-primary" aria-label="View results for job ${jobId} on ${hostLabel}" title="View results for ${hostLabel}">Results</button></td>
@@ -1643,9 +1661,15 @@ async function editTarget(targetId, currentHostname, currentPort) {
       method: "PUT",
       body: JSON.stringify({ hostname, port }),
     });
+    const queueErrors = Array.isArray(data.queue_errors)
+      ? data.queue_errors.filter(Boolean)
+      : [];
     log(
       `Target ${targetId} updated to ${hostname}:${port}. Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
     );
+    if (queueErrors.length > 0) {
+      log(`Target ${targetId} updated, but queue warnings: ${queueErrors.join(" | ")}`);
+    }
     await Promise.all([
       refreshTargets(),
       refreshJobs(),
@@ -1654,6 +1678,8 @@ async function editTarget(targetId, currentHostname, currentPort) {
     ]);
   } catch (error) {
     log(`Edit target failed: ${error.message}`);
+    // Refresh anyway: backend may have committed the edit before queue errors.
+    await Promise.all([refreshTargets(), refreshSpoofable(), loadDashboard()]);
   }
 }
 

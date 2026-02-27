@@ -88,6 +88,18 @@ def ensure_scheduler_config_table(db):
     db.commit()
 
 
+def ensure_scans_error_message_column(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE scans
+            ADD COLUMN IF NOT EXISTS error_message TEXT
+            """
+        )
+    )
+    db.commit()
+
+
 def _py_weekday_from_sunday_first(day_of_week: int) -> int:
     # Python weekday: Monday=0..Sunday=6; config stores Sunday=0..Saturday=6.
     return (int(day_of_week) + 6) % 7
@@ -224,6 +236,7 @@ def run_scan(target_id: str):
     scan_id = None
 
     try:
+        ensure_scans_error_message_column(db)
         target_row = db.execute(
             text("SELECT hostname, port FROM targets WHERE id=:id"),
             {"id": target_id},
@@ -302,7 +315,7 @@ def run_scan(target_id: str):
         db.execute(
             text("""
                 UPDATE scans
-                SET finished_at=:end, status='done'
+                SET finished_at=:end, status='done', error_message=NULL
                 WHERE id=:sid
             """),
             {"end": datetime.utcnow(), "sid": scan_id},
@@ -359,15 +372,19 @@ def run_scan(target_id: str):
                     },
                 )
                 db.commit()
-    except Exception:
+    except Exception as exc:
         if scan_id:
             db.execute(
                 text("""
                     UPDATE scans
-                    SET finished_at=:end, status='failed'
+                    SET finished_at=:end, status='failed', error_message=:err
                     WHERE id=:sid
                 """),
-                {"end": datetime.utcnow(), "sid": scan_id},
+                {
+                    "end": datetime.utcnow(),
+                    "sid": scan_id,
+                    "err": str(exc)[:2000],
+                },
             )
             db.commit()
         raise

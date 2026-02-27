@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from auth import verify_password, create_access_token, hash_password
 from deps import get_current_admin, get_current_user
 import csv
+import ipaddress
 import os
+import socket
 import smtplib
 import time
 from uuid import UUID
@@ -336,6 +338,48 @@ def ensure_target_dns_table(db):
     db.commit()
 
 
+def ensure_scans_error_message_column(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE scans
+            ADD COLUMN IF NOT EXISTS error_message TEXT
+            """
+        )
+    )
+    db.commit()
+
+
+def _is_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(str(value or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_hostname_resolves(hostname: str, port: int):
+    host = str(hostname or "").strip()
+    if not host:
+        raise HTTPException(status_code=400, detail="hostname is required")
+    if _is_ip_address(host):
+        return
+    try:
+        socket.getaddrinfo(
+            host, int(port), socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
+    except socket.gaierror:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hostname could not be resolved: {host}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hostname resolution check failed for {host}: {exc}",
+        )
+
+
 def ensure_event_logs_table(db):
     db.execute(
         text(
@@ -625,6 +669,7 @@ def init_proxy_config():
         ensure_scheduler_config_table(db)
         ensure_smtp_config_table(db)
         ensure_target_dns_table(db)
+        ensure_scans_error_message_column(db)
         ensure_users_table(db)
         ensure_event_logs_table(db)
     finally:
@@ -638,6 +683,7 @@ def health():
 
 @app.post("/targets")
 def add_target(hostname: str, port: int = 443, user=Depends(get_current_user)):
+    _validate_hostname_resolves(hostname, port)
     db = SessionLocal()
     try:
         row = db.execute(
@@ -739,6 +785,7 @@ def update_target(
         raise HTTPException(
             status_code=400, detail="port must be in range 1-65535"
         )
+    _validate_hostname_resolves(hostname, port)
 
     db = SessionLocal()
     try:
@@ -759,17 +806,41 @@ def update_target(
             ),
             {"hostname": hostname, "port": port, "tid": target_id},
         )
+        # Purge cached DNS so next lookup always reflects the edited host.
+        db.execute(
+            text("DELETE FROM target_dns WHERE target_id=:tid"),
+            {"tid": target_id},
+        )
         db.commit()
 
-        dns_task = celery_client.send_task(
-            "worker.run_dns_lookup", args=[str(target_id)]
-        )
-        scan_task = celery_client.send_task("worker.run_scan", args=[str(target_id)])
+        dns_task_id = None
+        scan_task_id = None
+        queue_errors = []
+
+        try:
+            dns_task = celery_client.send_task(
+                "worker.run_dns_lookup", args=[str(target_id)]
+            )
+            dns_task_id = dns_task.id
+        except Exception as exc:
+            queue_errors.append(f"dns: {exc}")
+
+        try:
+            scan_task = celery_client.send_task(
+                "worker.run_scan", args=[str(target_id)]
+            )
+            scan_task_id = scan_task.id
+        except Exception as exc:
+            queue_errors.append(f"scan: {exc}")
+
         return {
             "status": "updated",
             "target_id": str(target_id),
-            "dns_task_id": dns_task.id,
-            "scan_task_id": scan_task.id,
+            "hostname": hostname,
+            "port": port,
+            "dns_task_id": dns_task_id,
+            "scan_task_id": scan_task_id,
+            "queue_errors": queue_errors,
         }
     finally:
         db.close()
@@ -1759,7 +1830,8 @@ def list_jobs(
                   t.port,
                   s.started_at,
                   s.finished_at,
-                  s.status
+                  s.status,
+                  s.error_message
                 FROM scans s
                 LEFT JOIN targets t ON t.id = s.target_id
                 WHERE s.status IS NULL OR s.status != 'purged'
@@ -2008,6 +2080,10 @@ def admin_purge_targets(user=Depends(get_current_admin)):
 def job_results(scan_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
+        scan_row = db.execute(
+            text("SELECT status, error_message FROM scans WHERE id=:sid"),
+            {"sid": str(scan_id)},
+        ).fetchone()
         rows = db.execute(
             text(
                 """
@@ -2019,7 +2095,22 @@ def job_results(scan_id: UUID, user=Depends(get_current_user)):
             ),
             {"sid": str(scan_id)},
         ).fetchall()
-        return [dict(r._mapping) for r in rows]
+        payload = [dict(r._mapping) for r in rows]
+        if scan_row and scan_row._mapping.get("status") == "failed":
+            error_message = (
+                str(scan_row._mapping.get("error_message") or "").strip()
+            )
+            payload.insert(
+                0,
+                {
+                    "plugin": "scan_error",
+                    "result": {
+                        "status": "failed",
+                        "error": error_message or "Scan failed.",
+                    },
+                },
+            )
+        return payload
     finally:
         db.close()
 

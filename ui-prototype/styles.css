@@ -283,6 +283,25 @@ textarea:focus-visible {
   background: #f8fbff;
   padding: 12px;
   min-height: 80px;
+  overflow-x: hidden;
+}
+
+.results-panel pre,
+.results-panel .tiny-mono,
+.results-panel .sev-badge,
+.results-panel dd,
+.results-panel li {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.results-panel .result-grid > * {
+  min-width: 0;
+}
+
+.results-panel .sev-badge {
+  max-width: 100%;
 }
 
 .result-card {
