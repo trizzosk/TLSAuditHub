@@ -952,6 +952,7 @@ function renderTargets(targets) {
         <td>${target.scan_interval_minutes ?? "-"}</td>
         <td>
           <div class="target-actions">
+            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
             <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="Run scan for ${hostname}">Run Scan</button>
             <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" class="dns-data-btn btn btn-sm btn-outline-secondary" aria-label="View DNS data for ${hostname}" title="View DNS data for ${hostname}">DNS Data</button>
             <button data-target-id="${targetId}" class="delete-target-btn btn btn-sm btn-outline-danger" aria-label="Delete target ${hostname}" title="Delete target ${hostname}">Delete</button>
@@ -1605,6 +1606,54 @@ async function runScan(targetId) {
     activateView("jobsView");
   } catch (error) {
     log(`Run scan failed: ${error.message}`);
+  }
+}
+
+async function editTarget(targetId, currentHostname, currentPort) {
+  const hostnameInput = window.prompt(
+    "Edit hostname",
+    String(currentHostname || "")
+  );
+  if (hostnameInput === null) {
+    return;
+  }
+
+  const hostname = hostnameInput.trim();
+  if (!hostname) {
+    log("Edit target failed: hostname is required.");
+    return;
+  }
+
+  const portInput = window.prompt(
+    "Edit port (1-65535)",
+    String(currentPort || 443)
+  );
+  if (portInput === null) {
+    return;
+  }
+
+  const port = Number(portInput);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    log("Edit target failed: port must be an integer in range 1-65535.");
+    return;
+  }
+
+  try {
+    const data = await apiRequest(`/targets/${targetId}`, {
+      method: "PUT",
+      body: JSON.stringify({ hostname, port }),
+    });
+    log(
+      `Target ${targetId} updated to ${hostname}:${port}. Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
+    );
+    await Promise.all([
+      refreshTargets(),
+      refreshJobs(),
+      refreshSpoofable(),
+      loadDashboard(),
+    ]);
+  } catch (error) {
+    log(`Edit target failed: ${error.message}`);
   }
 }
 
@@ -2355,6 +2404,16 @@ ui.reportTypeSelect.addEventListener("change", () => {
 });
 
 ui.targetsBody.addEventListener("click", (event) => {
+  const editBtn = event.target.closest(".edit-target-btn");
+  if (editBtn) {
+    editTarget(
+      editBtn.dataset.targetId,
+      editBtn.dataset.hostname,
+      editBtn.dataset.port
+    );
+    return;
+  }
+
   const runBtn = event.target.closest(".run-scan-btn");
   if (runBtn) {
     runScan(runBtn.dataset.targetId);

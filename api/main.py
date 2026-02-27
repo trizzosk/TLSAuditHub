@@ -82,6 +82,11 @@ class ReportEmailRequest(BaseModel):
     subject: str = ""
 
 
+class TargetUpdate(BaseModel):
+    hostname: str
+    port: int = 443
+
+
 REPORT_DEFINITIONS = {
     "no_tls13": {
         "id": "no_tls13",
@@ -716,6 +721,55 @@ def get_target_dns(target_id: UUID, user=Depends(get_current_user)):
             "status": "ok",
             "data": data.get("data") or {},
             "updated_at": data.get("updated_at"),
+        }
+    finally:
+        db.close()
+
+
+@app.put("/targets/{target_id}")
+def update_target(
+    target_id: UUID, payload: TargetUpdate, user=Depends(get_current_user)
+):
+    hostname = (payload.hostname or "").strip()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="hostname is required")
+
+    port = int(payload.port)
+    if port < 1 or port > 65535:
+        raise HTTPException(
+            status_code=400, detail="port must be in range 1-65535"
+        )
+
+    db = SessionLocal()
+    try:
+        target = db.execute(
+            text("SELECT id FROM targets WHERE id=:tid"),
+            {"tid": target_id},
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="Target not found")
+
+        db.execute(
+            text(
+                """
+                UPDATE targets
+                SET hostname=:hostname, port=:port
+                WHERE id=:tid
+                """
+            ),
+            {"hostname": hostname, "port": port, "tid": target_id},
+        )
+        db.commit()
+
+        dns_task = celery_client.send_task(
+            "worker.run_dns_lookup", args=[str(target_id)]
+        )
+        scan_task = celery_client.send_task("worker.run_scan", args=[str(target_id)])
+        return {
+            "status": "updated",
+            "target_id": str(target_id),
+            "dns_task_id": dns_task.id,
+            "scan_task_id": scan_task.id,
         }
     finally:
         db.close()
