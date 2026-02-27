@@ -208,12 +208,19 @@
                   <option value="missing_dmarc_policy">Hosts Missing DMARC Policy</option>
                 </select>
               </div>
+              <div class="form-field reports-run-field">
+                <label class="form-label">&nbsp;</label>
+                <button id="runReportsBtn" class="btn btn-primary btn-sm reports-run-btn" type="button">Run Report</button>
+              </div>
             </div>
-            <p id="reportDescription" class="muted mt-2 mb-0">Select a report and click Refresh.</p>
+            <p id="reportDescription" class="muted mt-2 mb-0">Select a report and click Run Report.</p>
             <div class="table-wrap mt-3">
               <table id="reportsTable" class="table table-hover align-middle">
                 <thead>
                   <tr>
+                    <th scope="col" style="width: 44px;">
+                      <input id="reportsSelectAll" type="checkbox" aria-label="Select all report rows">
+                    </th>
                     <th scope="col">Host / Target</th>
                     <th scope="col">Finding ID</th>
                     <th scope="col">Severity</th>
@@ -222,7 +229,7 @@
                   </tr>
                 </thead>
                 <tbody id="reportsBody">
-                  <tr><td colspan="5" class="muted">No report loaded</td></tr>
+                  <tr><td colspan="6" class="muted">No report loaded</td></tr>
                 </tbody>
               </table>
             </div>

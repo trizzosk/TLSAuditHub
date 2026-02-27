@@ -222,6 +222,18 @@ textarea:focus-visible {
   gap: 10px;
 }
 
+.reports-run-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.reports-run-btn {
+  width: auto;
+  margin-left: 4px;
+}
+
 .checkbox-row {
   display: inline-flex;
   align-items: center;

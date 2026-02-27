@@ -31,6 +31,7 @@ const ui = {
   spoofablePrevBtn: document.getElementById("spoofablePrevBtn"),
   spoofableNextBtn: document.getElementById("spoofableNextBtn"),
   spoofablePageInfo: document.getElementById("spoofablePageInfo"),
+  runReportsBtn: document.getElementById("runReportsBtn"),
   refreshReportsBtn: document.getElementById("refreshReportsBtn"),
   sendReportsEmailBtn: document.getElementById("sendReportsEmailBtn"),
   exportReportsCsvBtn: document.getElementById("exportReportsCsvBtn"),
@@ -38,6 +39,7 @@ const ui = {
   reportTypeSelect: document.getElementById("reportTypeSelect"),
   reportDescription: document.getElementById("reportDescription"),
   reportsBody: document.getElementById("reportsBody"),
+  reportsSelectAll: document.getElementById("reportsSelectAll"),
   reportsPageSize: document.getElementById("reportsPageSize"),
   reportsPrevBtn: document.getElementById("reportsPrevBtn"),
   reportsNextBtn: document.getElementById("reportsNextBtn"),
@@ -136,6 +138,9 @@ const pagination = {
   eventLogs: { page: 1, pageSize: 10, total: 0 },
 };
 let currentReportMeta = null;
+let currentReportItems = [];
+let currentReportId = "";
+const selectedReportTargetIds = new Set();
 let activeAdminPage = "adminUsersPage";
 const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
@@ -1207,26 +1212,68 @@ function renderSpoofableList(items) {
     .join("");
 }
 
+function reportSelectionKey(row) {
+  return String(row?.target_id || "").trim();
+}
+
+function syncReportsSelectAll() {
+  if (!ui.reportsSelectAll) {
+    return;
+  }
+  const visibleKeys = currentReportItems
+    .map((row) => reportSelectionKey(row))
+    .filter(Boolean);
+  if (!visibleKeys.length) {
+    ui.reportsSelectAll.checked = false;
+    ui.reportsSelectAll.indeterminate = false;
+    ui.reportsSelectAll.disabled = true;
+    return;
+  }
+  ui.reportsSelectAll.disabled = false;
+  const selectedCount = visibleKeys.filter((key) =>
+    selectedReportTargetIds.has(key)
+  ).length;
+  ui.reportsSelectAll.checked = selectedCount === visibleKeys.length;
+  ui.reportsSelectAll.indeterminate =
+    selectedCount > 0 && selectedCount < visibleKeys.length;
+}
+
 function renderReportRows(items) {
+  currentReportItems = Array.isArray(items) ? items : [];
   if (!Array.isArray(items) || items.length === 0) {
     ui.reportsBody.innerHTML =
-      "<tr><td colspan='5' class='muted'>No findings for selected report.</td></tr>";
+      "<tr><td colspan='6' class='muted'>No findings for selected report.</td></tr>";
+    syncReportsSelectAll();
     return;
   }
 
   ui.reportsBody.innerHTML = items
     .map(
-      (row) => `
+      (row) => {
+        const key = reportSelectionKey(row);
+        const checked = key && selectedReportTargetIds.has(key) ? "checked" : "";
+        return `
       <tr>
+        <td>
+          <input
+            type="checkbox"
+            class="report-row-select"
+            data-target-id="${escapeHtml(key || "")}"
+            ${checked}
+            aria-label="Select ${escapeHtml(row.host_target || "row")}"
+          >
+        </td>
         <td class="tiny-mono">${escapeHtml(row.host_target || "-")}</td>
         <td>${escapeHtml(row.finding_id || "-")}</td>
         <td>${sevBadge(row.severity || "-", row.severity === "high" ? "bad" : row.severity === "medium" ? "warn" : "good")}</td>
         <td class="tiny-mono">${escapeHtml(row.finding_proof || "-")}</td>
         <td>${escapeHtml(fmtDate(row.scan_timestamp_utc))}</td>
       </tr>
-    `
+    `;
+      }
     )
     .join("");
+  syncReportsSelectAll();
 }
 
 async function loadAllReportItems(reportId) {
@@ -1243,6 +1290,10 @@ async function loadAllReportItems(reportId) {
 async function refreshReports() {
   try {
     const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    if (currentReportId !== reportId) {
+      selectedReportTargetIds.clear();
+      currentReportId = reportId;
+    }
     pagination.reports.pageSize = getPageSize(ui.reportsPageSize, 10);
     const limit = pagination.reports.pageSize;
     const offset = limit > 0 ? (pagination.reports.page - 1) * limit : 0;
@@ -1260,6 +1311,15 @@ async function refreshReports() {
         currentReportMeta?.description || "No report description available.";
     }
     pagination.reports.total = data.total ?? 0;
+    if (
+      pagination.reports.page > 1 &&
+      pagination.reports.total > 0 &&
+      Array.isArray(data.items) &&
+      data.items.length === 0
+    ) {
+      pagination.reports.page = 1;
+      return refreshReports();
+    }
     updatePaginationUI("reports", {
       prevBtn: ui.reportsPrevBtn,
       nextBtn: ui.reportsNextBtn,
@@ -1271,9 +1331,16 @@ async function refreshReports() {
     );
   } catch (error) {
     ui.reportsBody.innerHTML =
-      "<tr><td colspan='5' class='muted'>Failed to load report.</td></tr>";
+      "<tr><td colspan='6' class='muted'>Failed to load report.</td></tr>";
+    currentReportItems = [];
+    syncReportsSelectAll();
     log(`Report load failed: ${error.message}`);
   }
+}
+
+async function runReports() {
+  pagination.reports.page = 1;
+  await refreshReports();
 }
 
 async function exportReportsCsv() {
@@ -1398,6 +1465,11 @@ async function exportReportsPdf() {
 async function sendReportEmail() {
   try {
     const reportId = String(ui.reportTypeSelect.value || "no_tls13");
+    const selectedIds = Array.from(selectedReportTargetIds);
+    if (!selectedIds.length) {
+      log("Report email send skipped: select at least one host.");
+      return;
+    }
     const subjectOverride = window.prompt(
       "Email subject (leave empty to use SMTP template):",
       ""
@@ -1409,6 +1481,7 @@ async function sendReportEmail() {
       method: "POST",
       body: JSON.stringify({
         report_id: reportId,
+        selected_target_ids: selectedIds,
         subject: String(subjectOverride || "").trim(),
       }),
     });
@@ -2298,6 +2371,7 @@ ui.refreshTargetsBtn.addEventListener("click", refreshTargets);
 ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
 ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
 ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
+ui.runReportsBtn.addEventListener("click", runReports);
 ui.refreshReportsBtn.addEventListener("click", refreshReports);
 ui.sendReportsEmailBtn.addEventListener("click", sendReportEmail);
 ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
@@ -2412,6 +2486,37 @@ ui.reportsNextBtn.addEventListener("click", () => {
   pagination.reports.page += 1;
   refreshReports();
 });
+ui.reportsBody.addEventListener("change", (event) => {
+  const checkbox = event.target.closest(".report-row-select");
+  if (!checkbox) {
+    return;
+  }
+  const targetId = String(checkbox.dataset.targetId || "").trim();
+  if (!targetId) {
+    return;
+  }
+  if (checkbox.checked) {
+    selectedReportTargetIds.add(targetId);
+  } else {
+    selectedReportTargetIds.delete(targetId);
+  }
+  syncReportsSelectAll();
+});
+ui.reportsSelectAll.addEventListener("change", () => {
+  const shouldSelect = Boolean(ui.reportsSelectAll.checked);
+  currentReportItems.forEach((row) => {
+    const key = reportSelectionKey(row);
+    if (!key) {
+      return;
+    }
+    if (shouldSelect) {
+      selectedReportTargetIds.add(key);
+    } else {
+      selectedReportTargetIds.delete(key);
+    }
+  });
+  renderReportRows(currentReportItems);
+});
 ui.eventLogPrevBtn.addEventListener("click", () => {
   pagination.eventLogs.page = Math.max(1, pagination.eventLogs.page - 1);
   refreshEventLogs();
@@ -2426,7 +2531,14 @@ ui.menuItems.forEach((item) => {
 });
 ui.reportTypeSelect.addEventListener("change", () => {
   pagination.reports.page = 1;
-  refreshReports();
+  selectedReportTargetIds.clear();
+  currentReportItems = [];
+  currentReportId = String(ui.reportTypeSelect.value || "");
+  syncReportsSelectAll();
+  if (ui.reportsBody) {
+    ui.reportsBody.innerHTML =
+      "<tr><td colspan='6' class='muted'>Report selected. Click 'Run Report'.</td></tr>";
+  }
 });
 
 ui.targetsBody.addEventListener("click", (event) => {

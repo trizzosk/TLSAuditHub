@@ -4,7 +4,7 @@ from sqlalchemy import text
 from celery import Celery
 from shared.database import SessionLocal
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from auth import verify_password, create_access_token, hash_password
 from deps import get_current_admin, get_current_user
 import csv
@@ -82,6 +82,7 @@ class SmtpConfigUpdate(BaseModel):
 class ReportEmailRequest(BaseModel):
     report_id: str
     subject: str = ""
+    selected_target_ids: list[str] = Field(default_factory=list)
 
 
 class TargetUpdate(BaseModel):
@@ -1530,7 +1531,8 @@ def _latest_completed_scans(db):
               COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
             FROM scans s
             JOIN targets t ON t.id = s.target_id
-            WHERE s.status = 'completed'
+            WHERE s.status IN ('completed', 'done')
+              AND t.enabled = true
             ORDER BY
               s.target_id,
               s.finished_at DESC NULLS LAST,
@@ -1550,7 +1552,7 @@ def _load_results_for_scans(db, scan_ids: list[str], plugins: list[str]):
             """
             SELECT scan_id, plugin, result
             FROM scan_results
-            WHERE scan_id = ANY(:scan_ids)
+            WHERE scan_id = ANY(CAST(:scan_ids AS uuid[]))
               AND plugin = ANY(:plugins)
             """
         ),
@@ -1566,6 +1568,20 @@ def _load_results_for_scans(db, scan_ids: list[str], plugins: list[str]):
     return grouped
 
 
+def _coerce_support_flag(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return True
+        if lowered in {"false", "0", "no", "n", ""}:
+            return False
+    return False
+
+
 def _build_no_tls13_items(db):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
@@ -1578,7 +1594,9 @@ def _build_no_tls13_items(db):
     for row in latest:
         scan_id = str(row["scan_id"])
         tls13 = (by_scan.get(scan_id) or {}).get("tls_1_3_cipher_suites") or {}
-        is_supported = bool(tls13.get("is_protocol_supported"))
+        is_supported = _coerce_support_flag(
+            tls13.get("is_protocol_supported", tls13.get("is_tls_version_supported"))
+        )
         if is_supported:
             continue
         accepted = tls13.get("accepted_cipher_suites") or []
@@ -1652,10 +1670,11 @@ def _build_spf_not_strict_items(db):
               SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
               FROM scans s
               WHERE s.target_id = t.id
-                AND s.status = 'completed'
+                AND s.status IN ('completed', 'done')
               ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
               LIMIT 1
             ) latest ON TRUE
+            WHERE t.enabled = true
             ORDER BY t.hostname ASC, t.port ASC
             """
         )
@@ -1735,10 +1754,11 @@ def _build_missing_dmarc_policy_items(db):
               SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
               FROM scans s
               WHERE s.target_id = t.id
-                AND s.status = 'completed'
+                AND s.status IN ('completed', 'done')
               ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
               LIMIT 1
             ) latest ON TRUE
+            WHERE t.enabled = true
             ORDER BY t.hostname ASC, t.port ASC
             """
         )
@@ -1915,6 +1935,23 @@ def send_report_email(payload: ReportEmailRequest, user=Depends(get_current_admi
         rows = _build_report_items(db, report_id)
     finally:
         db.close()
+
+    selected_target_ids = {
+        str(value).strip()
+        for value in (payload.selected_target_ids or [])
+        if str(value).strip()
+    }
+    if selected_target_ids:
+        rows = [
+            row
+            for row in rows
+            if str(row.get("target_id") or "").strip() in selected_target_ids
+        ]
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="No selected hosts match findings for this report.",
+        )
 
     subject = (
         (payload.subject or "").strip()
