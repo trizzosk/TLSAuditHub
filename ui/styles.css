@@ -159,6 +159,26 @@ textarea:focus-visible {
   display: none !important;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1600;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 72px 16px 24px;
+  background: rgba(7, 18, 31, 0.45);
+  overflow-y: auto;
+}
+
+.modal-card {
+  width: min(760px, 100%);
+}
+
 .card {
   border-color: var(--app-border);
 }
@@ -244,6 +264,14 @@ textarea:focus-visible {
   margin: 0;
   color: var(--app-muted);
   font-size: 0.86rem;
+}
+
+.form-hint.form-hint-error {
+  color: #842029;
+}
+
+.form-hint.form-hint-success {
+  color: #1f5f42;
 }
 
 .muted {

@@ -3,7 +3,7 @@ services:
     image: python:3.12-slim
     container_name: tlsaudithub-ui
     volumes:
-      - ./ui-prototype:/app
+      - ./ui:/app
     working_dir: /app
     command: >
       sh -c "python -m http.server 5173 --bind 0.0.0.0"

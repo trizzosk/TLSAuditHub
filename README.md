@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/release/python-3120/)
 
-<img src="ui-prototype/logo.svg" alt="TLSAuditHub logo" style="max-width: 33%; width: 100%; height: auto; justify-content: center;">
+<img src="ui/logo.svg" alt="TLSAuditHub logo" style="max-width: 33%; width: 100%; height: auto; justify-content: center;">
 
 ## Objective
 TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across services. It focuses on scheduled scans, change tracking, and a clean operator workflow.
@@ -20,7 +20,7 @@ The core TLS scanning engine in this project is [`sslyze`](https://github.com/na
 - Spoofable report view to highlight domains with weak SPF/DMARC posture.
 - DNS data collection per target (WHOIS, NS, MX, SPF, DMARC) used by reports.
 - Admin proxy configuration for outbound scan traffic.
-- UI prototype for exercising the API and dashboards.
+- Web UI for exercising the API and dashboards.
 
 ## Deployment
 The repo ships as a multi-service Docker Compose stack (API, worker, scheduler, Postgres, Redis, UI).
@@ -184,12 +184,12 @@ Change this password immediately after first login.
 ### Run backend only and host the UI locally
 1. `docker compose up api worker scheduler postgres redis`
 2. In another terminal:
-   - `cd ui-prototype`
+   - `cd ui`
    - `python3 -m http.server 5173`
 3. Open `http://localhost:5173`
 
 ## Notes
-- The UI prototype is in `ui-prototype/` and intended for workflow validation.
+- The web UI is in `ui/`.
 - The UI presents only the login form until authenticated.
 - The Spoofable report uses stored DNS data (SPF/DMARC) per target to classify spoofing risk.
 - DNS data is collected in the background when a target is added.

@@ -18,6 +18,13 @@ const ui = {
   port: document.getElementById("port"),
   refreshTargetsBtn: document.getElementById("refreshTargetsBtn"),
   targetsBody: document.getElementById("targetsBody"),
+  editTargetPanel: document.getElementById("editTargetPanel"),
+  editTargetForm: document.getElementById("editTargetForm"),
+  editTargetId: document.getElementById("editTargetId"),
+  editTargetHostname: document.getElementById("editTargetHostname"),
+  editTargetPort: document.getElementById("editTargetPort"),
+  editTargetStatus: document.getElementById("editTargetStatus"),
+  cancelEditTargetBtn: document.getElementById("cancelEditTargetBtn"),
   dnsPanel: document.getElementById("dnsPanel"),
   targetsPageSize: document.getElementById("targetsPageSize"),
   targetsPrevBtn: document.getElementById("targetsPrevBtn"),
@@ -34,6 +41,12 @@ const ui = {
   runReportsBtn: document.getElementById("runReportsBtn"),
   refreshReportsBtn: document.getElementById("refreshReportsBtn"),
   sendReportsEmailBtn: document.getElementById("sendReportsEmailBtn"),
+  reportEmailPanel: document.getElementById("reportEmailPanel"),
+  reportEmailSelectionInfo: document.getElementById("reportEmailSelectionInfo"),
+  reportEmailStatus: document.getElementById("reportEmailStatus"),
+  reportEmailForm: document.getElementById("reportEmailForm"),
+  reportEmailSubject: document.getElementById("reportEmailSubject"),
+  cancelReportEmailBtn: document.getElementById("cancelReportEmailBtn"),
   exportReportsCsvBtn: document.getElementById("exportReportsCsvBtn"),
   exportReportsPdfBtn: document.getElementById("exportReportsPdfBtn"),
   reportTypeSelect: document.getElementById("reportTypeSelect"),
@@ -201,6 +214,39 @@ function updateAdminNavToggleState() {
   }
   const collapsed = ui.adminShell.classList.contains("admin-nav-collapsed");
   ui.adminNavToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function updateModalBodyLock() {
+  const hasOpenModal = [ui.editTargetPanel, ui.reportEmailPanel].some(
+    (panel) => panel && !panel.classList.contains("hidden")
+  );
+  document.body.classList.toggle("modal-open", hasOpenModal);
+}
+
+function setEditTargetStatus(message = "", type = "") {
+  if (!ui.editTargetStatus) {
+    return;
+  }
+  ui.editTargetStatus.textContent = message;
+  ui.editTargetStatus.classList.remove("form-hint-error", "form-hint-success");
+  if (type === "error") {
+    ui.editTargetStatus.classList.add("form-hint-error");
+  } else if (type === "success") {
+    ui.editTargetStatus.classList.add("form-hint-success");
+  }
+}
+
+function setReportEmailStatus(message = "", type = "") {
+  if (!ui.reportEmailStatus) {
+    return;
+  }
+  ui.reportEmailStatus.textContent = message;
+  ui.reportEmailStatus.classList.remove("form-hint-error", "form-hint-success");
+  if (type === "error") {
+    ui.reportEmailStatus.classList.add("form-hint-error");
+  } else if (type === "success") {
+    ui.reportEmailStatus.classList.add("form-hint-success");
+  }
 }
 
 function persistSession(token, username) {
@@ -1236,6 +1282,9 @@ function syncReportsSelectAll() {
   ui.reportsSelectAll.checked = selectedCount === visibleKeys.length;
   ui.reportsSelectAll.indeterminate =
     selectedCount > 0 && selectedCount < visibleKeys.length;
+  if (ui.reportEmailSelectionInfo) {
+    ui.reportEmailSelectionInfo.textContent = `Selected hosts: ${selectedReportTargetIds.size}`;
+  }
 }
 
 function renderReportRows(items) {
@@ -1462,33 +1511,60 @@ async function exportReportsPdf() {
   }
 }
 
-async function sendReportEmail() {
+function closeReportEmailPanel() {
+  if (!ui.reportEmailPanel || !ui.reportEmailForm) {
+    return;
+  }
+  ui.reportEmailPanel.classList.add("hidden");
+  ui.reportEmailForm.reset();
+  setReportEmailStatus("");
+  updateModalBodyLock();
+}
+
+function openReportEmailPanel() {
+  const selectedCount = selectedReportTargetIds.size;
+  if (!selectedCount) {
+    log("Report email send skipped: select at least one host.");
+    return;
+  }
+  if (ui.reportEmailSelectionInfo) {
+    ui.reportEmailSelectionInfo.textContent = `Selected hosts: ${selectedCount}`;
+  }
+  setReportEmailStatus("");
+  ui.reportEmailPanel.classList.remove("hidden");
+  ui.reportEmailSubject.value = "";
+  ui.reportEmailSubject.focus();
+  updateModalBodyLock();
+}
+
+async function sendReportEmailFromPanel(event) {
+  event.preventDefault();
   try {
     const reportId = String(ui.reportTypeSelect.value || "no_tls13");
     const selectedIds = Array.from(selectedReportTargetIds);
     if (!selectedIds.length) {
+      setReportEmailStatus("Select at least one host.", "error");
       log("Report email send skipped: select at least one host.");
       return;
     }
-    const subjectOverride = window.prompt(
-      "Email subject (leave empty to use SMTP template):",
-      ""
-    );
-    if (subjectOverride === null) {
-      return;
-    }
+    setReportEmailStatus("Sending email...", "");
     const data = await apiRequest("/reports/email", {
       method: "POST",
       body: JSON.stringify({
         report_id: reportId,
         selected_target_ids: selectedIds,
-        subject: String(subjectOverride || "").trim(),
+        subject: String(ui.reportEmailSubject.value || "").trim(),
       }),
     });
+    setReportEmailStatus(
+      `Success: email sent to ${data.recipient || "-"} (${data.rows ?? 0} rows).`,
+      "success"
+    );
     log(
       `Report email sent to ${data.recipient || "-"}; subject='${data.subject || "-"}'; rows=${data.rows ?? 0}.`
     );
   } catch (error) {
+    setReportEmailStatus(`Error: ${error.message}`, "error");
     log(`Report email send failed: ${error.message}`);
   }
 }
@@ -1700,35 +1776,50 @@ async function runScan(targetId) {
   }
 }
 
-async function editTarget(targetId, currentHostname, currentPort) {
-  const hostnameInput = window.prompt(
-    "Edit hostname",
-    String(currentHostname || "")
-  );
-  if (hostnameInput === null) {
+function closeEditTargetPanel() {
+  if (!ui.editTargetPanel || !ui.editTargetForm) {
     return;
   }
+  ui.editTargetPanel.classList.add("hidden");
+  ui.editTargetForm.reset();
+  ui.editTargetId.value = "";
+  setEditTargetStatus("");
+  updateModalBodyLock();
+}
 
-  const hostname = hostnameInput.trim();
+function openEditTargetPanel(targetId, currentHostname, currentPort) {
+  ui.editTargetId.value = String(targetId || "");
+  ui.editTargetHostname.value = String(currentHostname || "");
+  ui.editTargetPort.value = String(currentPort || 443);
+  setEditTargetStatus("");
+  ui.editTargetPanel.classList.remove("hidden");
+  ui.editTargetHostname.focus();
+  updateModalBodyLock();
+}
+
+async function saveTargetEdit(event) {
+  event.preventDefault();
+  const targetId = String(ui.editTargetId.value || "").trim();
+  if (!targetId) {
+    setEditTargetStatus("Edit target failed: missing target id.", "error");
+    return;
+  }
+  const hostname = ui.editTargetHostname.value.trim();
   if (!hostname) {
-    log("Edit target failed: hostname is required.");
+    setEditTargetStatus("Edit target failed: hostname is required.", "error");
     return;
   }
 
-  const portInput = window.prompt(
-    "Edit port (1-65535)",
-    String(currentPort || 443)
-  );
-  if (portInput === null) {
-    return;
-  }
-
-  const port = Number(portInput);
+  const port = Number(ui.editTargetPort.value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    log("Edit target failed: port must be an integer in range 1-65535.");
+    setEditTargetStatus(
+      "Edit target failed: port must be an integer in range 1-65535.",
+      "error"
+    );
     return;
   }
 
+  setEditTargetStatus("Saving changes...", "");
   try {
     const data = await apiRequest(`/targets/${targetId}`, {
       method: "PUT",
@@ -1743,14 +1834,23 @@ async function editTarget(targetId, currentHostname, currentPort) {
     if (queueErrors.length > 0) {
       log(`Target ${targetId} updated, but queue warnings: ${queueErrors.join(" | ")}`);
     }
-    await Promise.all([
+    setEditTargetStatus("Target saved successfully.", "success");
+    closeEditTargetPanel();
+    const refreshResults = await Promise.allSettled([
       refreshTargets(),
       refreshJobs(),
       refreshSpoofable(),
       loadDashboard(),
     ]);
+    const refreshErrors = refreshResults
+      .filter((item) => item.status === "rejected")
+      .map((item) => item.reason?.message || String(item.reason || "unknown refresh error"));
+    if (refreshErrors.length) {
+      log(`Target updated, but post-save refresh had issues: ${refreshErrors.join(" | ")}`);
+    }
   } catch (error) {
     log(`Edit target failed: ${error.message}`);
+    setEditTargetStatus(`Edit target failed: ${error.message}`, "error");
     // Refresh anyway: backend may have committed the edit before queue errors.
     await Promise.all([refreshTargets(), refreshSpoofable(), loadDashboard()]);
   }
@@ -2373,7 +2473,14 @@ ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
 ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
 ui.runReportsBtn.addEventListener("click", runReports);
 ui.refreshReportsBtn.addEventListener("click", refreshReports);
-ui.sendReportsEmailBtn.addEventListener("click", sendReportEmail);
+ui.sendReportsEmailBtn.addEventListener("click", openReportEmailPanel);
+ui.reportEmailForm.addEventListener("submit", sendReportEmailFromPanel);
+ui.cancelReportEmailBtn.addEventListener("click", closeReportEmailPanel);
+ui.reportEmailPanel.addEventListener("click", (event) => {
+  if (event.target === ui.reportEmailPanel) {
+    closeReportEmailPanel();
+  }
+});
 ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
 ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
@@ -2397,6 +2504,13 @@ ui.purgeDnsBtn.addEventListener("click", purgeDnsData);
 ui.purgeJobsAdminBtn.addEventListener("click", purgeJobsData);
 ui.editUserForm.addEventListener("submit", saveUserEdit);
 ui.cancelEditUserBtn.addEventListener("click", closeEditUserPanel);
+ui.editTargetForm.addEventListener("submit", saveTargetEdit);
+ui.cancelEditTargetBtn.addEventListener("click", closeEditTargetPanel);
+ui.editTargetPanel.addEventListener("click", (event) => {
+  if (event.target === ui.editTargetPanel) {
+    closeEditTargetPanel();
+  }
+});
 ui.refreshUsersBtn.addEventListener("click", refreshUsers);
 ui.bulkTargetsForm.addEventListener("submit", importTargetsCsv);
 ui.refreshEventLogBtn.addEventListener("click", refreshEventLogs);
@@ -2544,7 +2658,7 @@ ui.reportTypeSelect.addEventListener("change", () => {
 ui.targetsBody.addEventListener("click", (event) => {
   const editBtn = event.target.closest(".edit-target-btn");
   if (editBtn) {
-    editTarget(
+    openEditTargetPanel(
       editBtn.dataset.targetId,
       editBtn.dataset.hostname,
       editBtn.dataset.port
@@ -2586,6 +2700,18 @@ ui.jobResultsPanel.addEventListener("click", (event) => {
   }
   activateView("jobsView");
 });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (ui.reportEmailPanel && !ui.reportEmailPanel.classList.contains("hidden")) {
+    closeReportEmailPanel();
+    return;
+  }
+  if (ui.editTargetPanel && !ui.editTargetPanel.classList.contains("hidden")) {
+    closeEditTargetPanel();
+  }
+});
 
 const persisted = loadPersistedSession();
 setToken(persisted.token, persisted.username);
@@ -2593,10 +2719,11 @@ if (ui.adminShell && isMobileAdminLayout()) {
   ui.adminShell.classList.add("admin-nav-collapsed");
 }
 updateAdminNavToggleState();
+updateModalBodyLock();
 if (persisted.token) {
   refreshAll();
 }
 setInterval(() => {
   refreshAll();
 }, 60000);
-log("Prototype loaded.");
+log("UI loaded.");
