@@ -5,6 +5,8 @@ const ui = {
   authUsername: document.getElementById("authUsername"),
   authPassword: document.getElementById("authPassword"),
   loginBtn: document.getElementById("loginBtn"),
+  loginOidcBtn: document.getElementById("loginOidcBtn"),
+  loginOidcHint: document.getElementById("loginOidcHint"),
   logoutBtn: document.getElementById("logoutBtn"),
   authState: document.getElementById("authState"),
   metricHostsTotal: document.getElementById("metricHostsTotal"),
@@ -121,6 +123,26 @@ const ui = {
   editUserEmail: document.getElementById("editUserEmail"),
   editUserIsActive: document.getElementById("editUserIsActive"),
   cancelEditUserBtn: document.getElementById("cancelEditUserBtn"),
+  authConfigForm: document.getElementById("authConfigForm"),
+  reloadAuthBtn: document.getElementById("reloadAuthBtn"),
+  authActiveMethod: document.getElementById("authActiveMethod"),
+  authOidcEnabled: document.getElementById("authOidcEnabled"),
+  authOidcIssuerUrl: document.getElementById("authOidcIssuerUrl"),
+  authOidcClientId: document.getElementById("authOidcClientId"),
+  authOidcClientSecret: document.getElementById("authOidcClientSecret"),
+  authOidcRedirectUri: document.getElementById("authOidcRedirectUri"),
+  authOidcUiRedirectUri: document.getElementById("authOidcUiRedirectUri"),
+  authOidcScopes: document.getElementById("authOidcScopes"),
+  authOidcUsernameClaim: document.getElementById("authOidcUsernameClaim"),
+  authLdapEnabled: document.getElementById("authLdapEnabled"),
+  authLdapHost: document.getElementById("authLdapHost"),
+  authLdapPort: document.getElementById("authLdapPort"),
+  authLdapUseSsl: document.getElementById("authLdapUseSsl"),
+  authLdapValidateCert: document.getElementById("authLdapValidateCert"),
+  authLdapBindDn: document.getElementById("authLdapBindDn"),
+  authLdapBindPassword: document.getElementById("authLdapBindPassword"),
+  authLdapUserBaseDn: document.getElementById("authLdapUserBaseDn"),
+  authLdapUserFilter: document.getElementById("authLdapUserFilter"),
   adminShell: document.getElementById("adminShell"),
   adminNav: document.getElementById("adminNav"),
   adminNavToggleBtn: document.getElementById("adminNavToggleBtn"),
@@ -129,6 +151,7 @@ const ui = {
   adminPages: document.querySelectorAll(".admin-page"),
   refreshEventLogBtn: document.getElementById("refreshEventLogBtn"),
   eventLogBody: document.getElementById("eventLogBody"),
+  eventLogLevelFilter: document.getElementById("eventLogLevelFilter"),
   eventLogPageSize: document.getElementById("eventLogPageSize"),
   eventLogPrevBtn: document.getElementById("eventLogPrevBtn"),
   eventLogNextBtn: document.getElementById("eventLogNextBtn"),
@@ -138,6 +161,7 @@ const ui = {
 
 let accessToken = "";
 let currentUsername = "";
+let oidcEnabled = false;
 const jobIndex = new Map();
 const userIndex = new Map();
 const SESSION_TOKEN_KEY = "tlsaudithub_access_token";
@@ -148,7 +172,7 @@ const pagination = {
   jobs: { page: 1, pageSize: 10, total: 0 },
   spoofable: { page: 1, pageSize: 10, total: 0 },
   reports: { page: 1, pageSize: 10, total: 0 },
-  eventLogs: { page: 1, pageSize: 10, total: 0 },
+  eventLogs: { page: 1, pageSize: 15, total: 0 },
 };
 let currentReportMeta = null;
 let currentReportItems = [];
@@ -339,9 +363,88 @@ async function login(event) {
   }
 }
 
+function startOidcLogin() {
+  const uiRedirect = `${window.location.origin}${window.location.pathname}`;
+  const query = new URLSearchParams();
+  query.set("ui_redirect", uiRedirect);
+  window.location.assign(`${baseUrl()}/auth/oidc/login?${query.toString()}`);
+}
+
+function readAuthHashPayload() {
+  const raw = window.location.hash || "";
+  const hash = raw.startsWith("#") ? raw.slice(1) : raw;
+  if (!hash) {
+    return null;
+  }
+  const params = new URLSearchParams(hash);
+  const appToken = String(params.get("app_token") || "").trim();
+  const username = String(params.get("username") || "").trim();
+  const oidcError = String(params.get("oidc_error") || "").trim();
+  const oidcErrorDescription = String(
+    params.get("oidc_error_description") || ""
+  ).trim();
+  if (!appToken && !oidcError) {
+    return null;
+  }
+  if (window.history && window.history.replaceState) {
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}`
+    );
+  } else {
+    window.location.hash = "";
+  }
+  return { appToken, username, oidcError, oidcErrorDescription };
+}
+
+function applyPublicAuthConfig(data = {}) {
+  const method = String(data.active_method || "local").toLowerCase();
+  oidcEnabled = Boolean(data.oidc_enabled);
+  const passwordEnabled = Boolean(data.password_login_enabled);
+  ui.loginOidcBtn.classList.toggle("hidden", !oidcEnabled);
+  ui.loginOidcHint.classList.toggle("hidden", !oidcEnabled);
+  ui.loginBtn.disabled = !passwordEnabled;
+  ui.authUsername.disabled = !passwordEnabled;
+  ui.authPassword.disabled = !passwordEnabled;
+  if (!passwordEnabled && method === "oidc") {
+    ui.loginBtn.textContent = "Password Login Disabled";
+  } else if (method === "ldap") {
+    ui.loginBtn.textContent = "Login (LDAP)";
+  } else {
+    ui.loginBtn.textContent = "Login";
+  }
+}
+
+async function loadAuthMethod() {
+  try {
+    const response = await fetch(`${baseUrl()}/auth/method`, {
+      method: "GET",
+    });
+    if (!response.ok) {
+      applyPublicAuthConfig({
+        active_method: "local",
+        password_login_enabled: true,
+        oidc_enabled: false,
+      });
+      return;
+    }
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    applyPublicAuthConfig(data);
+  } catch (_error) {
+    applyPublicAuthConfig({
+      active_method: "local",
+      password_login_enabled: true,
+      oidc_enabled: false,
+    });
+  }
+}
+
 function logout() {
   setToken("");
   log("Logged out.");
+  loadAuthMethod();
 }
 
 function showResultsSelectionPrompt() {
@@ -440,6 +543,8 @@ function activateAdminPage(pageId) {
 
   if (resolvedPageId === "adminProxyPage") {
     loadProxyConfig();
+  } else if (resolvedPageId === "adminAuthPage") {
+    loadAuthConfig();
   } else if (resolvedPageId === "adminSchedulerPage") {
     loadSchedulerConfig();
   } else if (resolvedPageId === "adminSmtpPage") {
@@ -1957,6 +2062,84 @@ async function loadJobResults(scanId) {
   }
 }
 
+async function loadAuthConfig() {
+  try {
+    const data = await apiRequest("/config/auth", { method: "GET" });
+    ui.authActiveMethod.value = String(data.active_method || "local").toLowerCase();
+    ui.authOidcEnabled.checked = Boolean(data.oidc_enabled);
+    ui.authOidcIssuerUrl.value = data.oidc_issuer_url || "";
+    ui.authOidcClientId.value = data.oidc_client_id || "";
+    ui.authOidcClientSecret.value = "";
+    ui.authOidcClientSecret.placeholder = data.oidc_has_client_secret
+      ? "stored (leave empty to keep current)"
+      : "optional";
+    ui.authOidcRedirectUri.value =
+      data.oidc_redirect_uri || "http://localhost:8000/auth/oidc/callback";
+    ui.authOidcUiRedirectUri.value = data.oidc_ui_redirect_uri || `${window.location.origin}/`;
+    ui.authOidcScopes.value = data.oidc_scopes || "openid profile email";
+    ui.authOidcUsernameClaim.value = data.oidc_username_claim || "preferred_username";
+    ui.authLdapEnabled.checked = Boolean(data.ldap_enabled);
+    ui.authLdapHost.value = data.ldap_host || "";
+    ui.authLdapPort.value = data.ldap_port || 636;
+    ui.authLdapUseSsl.checked = Boolean(data.ldap_use_ssl);
+    ui.authLdapValidateCert.checked = Boolean(data.ldap_validate_cert);
+    ui.authLdapBindDn.value = data.ldap_bind_dn || "";
+    ui.authLdapBindPassword.value = "";
+    ui.authLdapBindPassword.placeholder = data.ldap_has_bind_password
+      ? "stored (leave empty to keep current)"
+      : "optional";
+    ui.authLdapUserBaseDn.value = data.ldap_user_base_dn || "";
+    ui.authLdapUserFilter.value = data.ldap_user_filter || "(uid={username})";
+    log("Authentication configuration loaded.");
+  } catch (error) {
+    log(`Authentication configuration load failed: ${error.message}`);
+  }
+}
+
+async function saveAuthConfig(event) {
+  event.preventDefault();
+  const payload = {
+    active_method: String(ui.authActiveMethod.value || "local").toLowerCase(),
+    oidc_enabled: Boolean(ui.authOidcEnabled.checked),
+    oidc_issuer_url: ui.authOidcIssuerUrl.value.trim(),
+    oidc_client_id: ui.authOidcClientId.value.trim(),
+    oidc_client_secret: ui.authOidcClientSecret.value,
+    oidc_redirect_uri: ui.authOidcRedirectUri.value.trim(),
+    oidc_ui_redirect_uri: ui.authOidcUiRedirectUri.value.trim(),
+    oidc_scopes: ui.authOidcScopes.value.trim(),
+    oidc_username_claim: ui.authOidcUsernameClaim.value.trim(),
+    ldap_enabled: Boolean(ui.authLdapEnabled.checked),
+    ldap_host: ui.authLdapHost.value.trim(),
+    ldap_port: Number(ui.authLdapPort.value),
+    ldap_use_ssl: Boolean(ui.authLdapUseSsl.checked),
+    ldap_validate_cert: Boolean(ui.authLdapValidateCert.checked),
+    ldap_bind_dn: ui.authLdapBindDn.value.trim(),
+    ldap_bind_password: ui.authLdapBindPassword.value,
+    ldap_user_base_dn: ui.authLdapUserBaseDn.value.trim(),
+    ldap_user_filter: ui.authLdapUserFilter.value.trim(),
+  };
+
+  try {
+    const data = await apiRequest("/config/auth", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    ui.authOidcClientSecret.value = "";
+    ui.authOidcClientSecret.placeholder = data.oidc_has_client_secret
+      ? "stored (leave empty to keep current)"
+      : "optional";
+    ui.authLdapBindPassword.value = "";
+    ui.authLdapBindPassword.placeholder = data.ldap_has_bind_password
+      ? "stored (leave empty to keep current)"
+      : "optional";
+    ui.authActiveMethod.value = String(data.active_method || payload.active_method);
+    log(`Authentication configuration saved (active=${data.active_method}).`);
+    await loadAuthMethod();
+  } catch (error) {
+    log(`Authentication configuration save failed: ${error.message}`);
+  }
+}
+
 async function loadProxyConfig() {
   try {
     const data = await apiRequest("/config/proxy", { method: "GET" });
@@ -2258,6 +2441,20 @@ function openEditUserPanel(userId) {
   ui.editUserPanel.classList.remove("hidden");
 }
 
+function eventLevelBadge(level) {
+  const raw = String(level || "info").trim().toLowerCase();
+  const value = raw || "info";
+  const sevClass =
+    value === "error"
+      ? "sev-bad"
+      : value === "warn"
+        ? "sev-warn"
+        : value === "debug"
+          ? "sev-debug"
+          : "sev-good";
+  return `<span class="sev-badge ${sevClass}">${escapeHtml(value)}</span>`;
+}
+
 function renderEventLogs(rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     ui.eventLogBody.innerHTML =
@@ -2272,7 +2469,7 @@ function renderEventLogs(rows) {
         <td>${escapeHtml(fmtDate(row.created_at))}</td>
         <td>${escapeHtml(row.username || "-")}</td>
         <td>${escapeHtml(row.source || "-")}</td>
-        <td>${escapeHtml(row.level || "-")}</td>
+        <td>${eventLevelBadge(row.level)}</td>
         <td>${escapeHtml(row.message || "")}</td>
       </tr>
     `
@@ -2282,13 +2479,17 @@ function renderEventLogs(rows) {
 
 async function refreshEventLogs() {
   try {
-    pagination.eventLogs.pageSize = getPageSize(ui.eventLogPageSize, 10);
+    pagination.eventLogs.pageSize = getPageSize(ui.eventLogPageSize, 15);
     const limit = pagination.eventLogs.pageSize;
     const offset =
       limit > 0 ? (pagination.eventLogs.page - 1) * limit : 0;
+    const selectedLevel = String(ui.eventLogLevelFilter?.value || "all")
+      .trim()
+      .toLowerCase();
     const query = new URLSearchParams();
     query.set("limit", String(limit));
     query.set("offset", String(offset));
+    query.set("level", selectedLevel || "all");
     const data = await apiRequest(`/admin/event-logs?${query.toString()}`, {
       method: "GET",
     });
@@ -2485,7 +2686,15 @@ ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
 ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
 ui.loginForm.addEventListener("submit", login);
+ui.loginOidcBtn.addEventListener("click", () => {
+  if (!oidcEnabled) {
+    return;
+  }
+  startOidcLogin();
+});
 ui.logoutBtn.addEventListener("click", logout);
+ui.authConfigForm.addEventListener("submit", saveAuthConfig);
+ui.reloadAuthBtn.addEventListener("click", loadAuthConfig);
 ui.proxyForm.addEventListener("submit", saveProxyConfig);
 ui.reloadProxyBtn.addEventListener("click", loadProxyConfig);
 ui.schedulerForm.addEventListener("submit", saveSchedulerConfig);
@@ -2564,6 +2773,10 @@ ui.reportsPageSize.addEventListener("change", () => {
   refreshReports();
 });
 ui.eventLogPageSize.addEventListener("change", () => {
+  pagination.eventLogs.page = 1;
+  refreshEventLogs();
+});
+ui.eventLogLevelFilter.addEventListener("change", () => {
   pagination.eventLogs.page = 1;
   refreshEventLogs();
 });
@@ -2714,15 +2927,28 @@ document.addEventListener("keydown", (event) => {
 });
 
 const persisted = loadPersistedSession();
-setToken(persisted.token, persisted.username);
+const oidcHashPayload = readAuthHashPayload();
+if (oidcHashPayload?.appToken) {
+  setToken(oidcHashPayload.appToken, oidcHashPayload.username);
+  log(`OpenID login successful for ${oidcHashPayload.username}.`);
+} else if (oidcHashPayload?.oidcError) {
+  setToken("");
+  const extra = oidcHashPayload.oidcErrorDescription
+    ? ` (${oidcHashPayload.oidcErrorDescription})`
+    : "";
+  log(`OpenID login failed: ${oidcHashPayload.oidcError}${extra}`);
+} else {
+  setToken(persisted.token, persisted.username);
+}
 if (ui.adminShell && isMobileAdminLayout()) {
   ui.adminShell.classList.add("admin-nav-collapsed");
 }
 updateAdminNavToggleState();
 updateModalBodyLock();
-if (persisted.token) {
+if (accessToken) {
   refreshAll();
 }
+loadAuthMethod();
 setInterval(() => {
   refreshAll();
 }, 60000);

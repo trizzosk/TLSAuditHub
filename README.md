@@ -13,6 +13,7 @@ The core TLS scanning engine in this project is [`sslyze`](https://github.com/na
 
 ## Functions
 - Authentication via `/auth/token`.
+- Optional OpenID Connect login with local username mapping (user must exist in app).
 - Targets inventory with add/delete operations via `/targets`.
 - On-demand scan triggering per target.
 - Jobs view to track scan status and history.
@@ -65,6 +66,29 @@ DNS_ATTEMPTS=3
 DNS_USE_SEARCH=true
 WHOIS_SKIP_SUFFIXES=.internal,.local,.corp,.lan,.home,localhost
 ```
+
+### Authentication providers (Local / OIDC / LDAP)
+Authentication is configured in **Admin -> Authentication**.
+
+- Only one provider can be active at a time (`local`, `oidc`, or `ldap`).
+- External users are never auto-provisioned.
+- Username must match an existing active local app user (`users.username`).
+- No role/group claim mapping is used.
+- Admin access still depends on local `users.is_admin`.
+
+#### OpenID Connect
+- Uses Authorization Code flow with PKCE.
+- `oidc_username_claim` is mapped directly to local username.
+
+#### LDAP / LDAPS
+- Supports plain LDAP and LDAPS (`ldap_use_ssl`).
+- Certificate verification can be enabled/disabled (`ldap_validate_cert`).
+- User lookup uses configured base DN + filter (filter must include `{username}`).
+- Login binds with user DN and provided password after lookup.
+
+Environment variables can still be used as initial defaults for auth config on first startup:
+- `OIDC_*` (`OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, etc.)
+- `LDAP_*` (`LDAP_HOST`, `LDAP_PORT`, `LDAP_USE_SSL`, `LDAP_VALIDATE_CERT`, etc.)
 
 ### Report export via SMTP
 TLSAuditHub can export report findings directly by email (CSV attachment) using an internal SMTP relay.

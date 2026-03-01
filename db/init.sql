@@ -55,9 +55,16 @@ CREATE TABLE IF NOT EXISTS event_logs (
     created_at TIMESTAMP NOT NULL DEFAULT now(),
     username TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'ui',
-    level TEXT NOT NULL DEFAULT 'info',
+    level TEXT NOT NULL DEFAULT 'info'
+        CHECK (level IN ('debug', 'info', 'warn', 'error')),
     message TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_event_logs_created_at
+ON event_logs (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_event_logs_level_created_at
+ON event_logs (level, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS proxy_config (
     id INT PRIMARY KEY DEFAULT 1,
@@ -130,6 +137,50 @@ VALUES
 (
     1, FALSE, '', 25, FALSE, FALSE, '', '',
     '', '', '', '{finding_name}', 15
+)
+ON CONFLICT (id)
+DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS auth_config (
+    id INT PRIMARY KEY DEFAULT 1,
+    active_method TEXT NOT NULL DEFAULT 'local',
+    oidc_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    oidc_issuer_url TEXT NOT NULL DEFAULT '',
+    oidc_client_id TEXT NOT NULL DEFAULT '',
+    oidc_client_secret TEXT NOT NULL DEFAULT '',
+    oidc_redirect_uri TEXT NOT NULL DEFAULT 'http://localhost:8000/auth/oidc/callback',
+    oidc_ui_redirect_uri TEXT NOT NULL DEFAULT 'http://localhost:5173/',
+    oidc_scopes TEXT NOT NULL DEFAULT 'openid profile email',
+    oidc_username_claim TEXT NOT NULL DEFAULT 'preferred_username',
+    ldap_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ldap_host TEXT NOT NULL DEFAULT '',
+    ldap_port INT NOT NULL DEFAULT 636,
+    ldap_use_ssl BOOLEAN NOT NULL DEFAULT TRUE,
+    ldap_validate_cert BOOLEAN NOT NULL DEFAULT TRUE,
+    ldap_bind_dn TEXT NOT NULL DEFAULT '',
+    ldap_bind_password TEXT NOT NULL DEFAULT '',
+    ldap_user_base_dn TEXT NOT NULL DEFAULT '',
+    ldap_user_filter TEXT NOT NULL DEFAULT '(uid={username})',
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    CONSTRAINT auth_config_singleton CHECK (id = 1),
+    CONSTRAINT auth_method_valid CHECK (
+        active_method IN ('local', 'oidc', 'ldap')
+    )
+);
+
+INSERT INTO auth_config (
+    id, active_method,
+    oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
+    oidc_redirect_uri, oidc_ui_redirect_uri, oidc_scopes, oidc_username_claim,
+    ldap_enabled, ldap_host, ldap_port, ldap_use_ssl, ldap_validate_cert,
+    ldap_bind_dn, ldap_bind_password, ldap_user_base_dn, ldap_user_filter
+)
+VALUES (
+    1, 'local',
+    FALSE, '', '', '',
+    'http://localhost:8000/auth/oidc/callback', 'http://localhost:5173/', 'openid profile email', 'preferred_username',
+    FALSE, '', 636, TRUE, TRUE,
+    '', '', '', '(uid={username})'
 )
 ON CONFLICT (id)
 DO NOTHING;

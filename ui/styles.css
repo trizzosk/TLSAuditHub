@@ -408,6 +408,12 @@ body.modal-open {
   border-color: #ffecb5;
 }
 
+.sev-debug {
+  color: #0a4f7a;
+  background: #d9edf9;
+  border-color: #b7deef;
+}
+
 .sev-bad {
   color: #842029;
   background: #f8d7da;

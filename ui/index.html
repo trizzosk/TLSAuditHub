@@ -61,6 +61,10 @@
                   <input id="authPassword" class="form-control" type="password" placeholder="password" required>
                   <button id="loginBtn" class="btn btn-primary mt-2" type="submit">Login</button>
                 </form>
+                <button id="loginOidcBtn" class="btn btn-outline-primary mt-2 hidden" type="button">Login with OpenID</button>
+                <p id="loginOidcHint" class="muted mt-2 small hidden">
+                  OpenID login maps provider username to an existing active app user.
+                </p>
               </div>
             </div>
           </div>
@@ -351,6 +355,7 @@
           <aside id="adminNav" class="admin-nav card shadow-sm">
             <div class="card-body p-2 d-grid gap-2">
               <button class="admin-nav-item btn active" type="button" data-admin-page="adminUsersPage">Users</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminAuthPage">Authentication</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminProxyPage">Proxy</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSmtpPage">SMTP</button>
@@ -453,6 +458,113 @@
                       </form>
                     </div>
                   </section>
+                </div>
+              </section>
+            </section>
+
+            <section id="adminAuthPage" class="admin-page">
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Authentication Providers</h3>
+                    <button id="reloadAuthBtn" class="btn btn-outline-primary btn-sm" type="button">Reload Auth Config</button>
+                  </div>
+                  <form id="authConfigForm" class="proxy-form mt-3">
+                    <p class="form-hint mb-2">
+                      Only one authentication method can be active at a time.
+                    </p>
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="authActiveMethod" class="form-label">Active Method</label>
+                        <select id="authActiveMethod" class="form-select">
+                          <option value="local">Local Username/Password</option>
+                          <option value="oidc">OpenID Connect (OIDC)</option>
+                          <option value="ldap">LDAP / LDAPS</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <hr>
+                    <h4 class="h6 mb-2">OpenID Connect</h4>
+                    <label class="checkbox-row mb-2">
+                      <input id="authOidcEnabled" class="form-check-input me-2" type="checkbox">
+                      <span>Enable OIDC Configuration</span>
+                    </label>
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="authOidcIssuerUrl" class="form-label">Issuer URL</label>
+                        <input id="authOidcIssuerUrl" class="form-control" type="url" placeholder="https://idp.example.com/realms/company">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcClientId" class="form-label">Client ID</label>
+                        <input id="authOidcClientId" class="form-control" type="text" placeholder="tlsaudithub-ui">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcClientSecret" class="form-label">Client Secret</label>
+                        <input id="authOidcClientSecret" class="form-control" type="password" placeholder="leave empty to keep current">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcRedirectUri" class="form-label">Redirect URI</label>
+                        <input id="authOidcRedirectUri" class="form-control" type="url" value="http://localhost:8000/auth/oidc/callback">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcUiRedirectUri" class="form-label">UI Redirect URI</label>
+                        <input id="authOidcUiRedirectUri" class="form-control" type="url" value="http://localhost:5173/">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcScopes" class="form-label">Scopes</label>
+                        <input id="authOidcScopes" class="form-control" type="text" value="openid profile email">
+                      </div>
+                      <div class="form-field">
+                        <label for="authOidcUsernameClaim" class="form-label">Username Claim</label>
+                        <input id="authOidcUsernameClaim" class="form-control" type="text" value="preferred_username">
+                      </div>
+                    </div>
+
+                    <hr>
+                    <h4 class="h6 mb-2">LDAP / LDAPS</h4>
+                    <label class="checkbox-row mb-2">
+                      <input id="authLdapEnabled" class="form-check-input me-2" type="checkbox">
+                      <span>Enable LDAP Configuration</span>
+                    </label>
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="authLdapHost" class="form-label">LDAP Host</label>
+                        <input id="authLdapHost" class="form-control" type="text" placeholder="ldap.company.local">
+                      </div>
+                      <div class="form-field">
+                        <label for="authLdapPort" class="form-label">LDAP Port</label>
+                        <input id="authLdapPort" class="form-control" type="number" min="1" max="65535" value="636">
+                      </div>
+                      <div class="form-field">
+                        <label for="authLdapBindDn" class="form-label">Bind DN (Service Account)</label>
+                        <input id="authLdapBindDn" class="form-control" type="text" placeholder="cn=svc,ou=apps,dc=company,dc=local">
+                      </div>
+                      <div class="form-field">
+                        <label for="authLdapBindPassword" class="form-label">Bind Password</label>
+                        <input id="authLdapBindPassword" class="form-control" type="password" placeholder="leave empty to keep current">
+                      </div>
+                      <div class="form-field">
+                        <label for="authLdapUserBaseDn" class="form-label">User Base DN</label>
+                        <input id="authLdapUserBaseDn" class="form-control" type="text" placeholder="ou=users,dc=company,dc=local">
+                      </div>
+                      <div class="form-field">
+                        <label for="authLdapUserFilter" class="form-label">User Filter</label>
+                        <input id="authLdapUserFilter" class="form-control" type="text" value="(uid={username})">
+                        <p class="form-hint">Must include <span class="tiny-mono">{username}</span>.</p>
+                      </div>
+                    </div>
+                    <label class="checkbox-row mt-2">
+                      <input id="authLdapUseSsl" class="form-check-input me-2" type="checkbox" checked>
+                      <span>Use LDAPS (SSL/TLS)</span>
+                    </label>
+                    <label class="checkbox-row mt-2">
+                      <input id="authLdapValidateCert" class="form-check-input me-2" type="checkbox" checked>
+                      <span>Validate LDAP Server Certificate</span>
+                    </label>
+
+                    <button type="submit" id="saveAuthBtn" class="btn btn-primary mt-3">Save Auth Config</button>
+                  </form>
                 </div>
               </section>
             </section>
@@ -680,7 +792,17 @@
                 <div class="card-body">
                   <div class="section-header">
                     <h3 class="h5 mb-0">Stored Event History</h3>
-                    <button id="refreshEventLogBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh History</button>
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                      <label for="eventLogLevelFilter" class="form-label mb-0 small">Level</label>
+                      <select id="eventLogLevelFilter" class="form-select form-select-sm">
+                        <option value="all" selected>All</option>
+                        <option value="debug">Debug</option>
+                        <option value="info">Info</option>
+                        <option value="warn">Warn</option>
+                        <option value="error">Error</option>
+                      </select>
+                      <button id="refreshEventLogBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh History</button>
+                    </div>
                   </div>
                   <div class="table-wrap mt-3">
                     <table class="table table-hover align-middle">
@@ -701,7 +823,8 @@
                   <div class="table-controls">
                     <label for="eventLogPageSize">Rows</label>
                     <select id="eventLogPageSize" class="form-select form-select-sm">
-                      <option value="10" selected>10</option>
+                      <option value="15" selected>15</option>
+                      <option value="10">10</option>
                       <option value="25">25</option>
                       <option value="50">50</option>
                       <option value="100">100</option>

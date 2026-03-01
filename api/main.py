@@ -1,27 +1,85 @@
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from celery import Celery
 from shared.database import SessionLocal
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
+from jose import JWTError, jwt
 from auth import verify_password, create_access_token, hash_password
 from deps import get_current_admin, get_current_user
 import csv
 import ipaddress
 import os
+import secrets
 import socket
+import ssl
 import smtplib
 import time
+import urllib.parse
+import urllib.request
+import hashlib
+import base64
+import json
 from uuid import UUID
 from io import StringIO
 from email.message import EmailMessage
 
 app = FastAPI(title="SSLyze Scanner API")
 celery_client = Celery("api", broker="redis://redis:6379/0")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 FAILED_LOGINS = {}
 LOGIN_WINDOW_SECONDS = 300
 LOGIN_MAX_ATTEMPTS = 10
+EVENT_LOG_LEVELS = ("debug", "info", "warn", "error")
+EVENT_LOG_DEFAULT_LIMIT = 15
+EVENT_LOG_RETENTION_DAYS = 90
+OIDC_STATE_TTL_SECONDS = 300
+AUTH_METHODS = ("local", "oidc", "ldap")
+DEFAULT_AUTH_METHOD = "local"
+
+OIDC_ISSUER_URL_DEFAULT = (os.environ.get("OIDC_ISSUER_URL") or "").strip()
+OIDC_CLIENT_ID_DEFAULT = (os.environ.get("OIDC_CLIENT_ID") or "").strip()
+OIDC_CLIENT_SECRET_DEFAULT = (os.environ.get("OIDC_CLIENT_SECRET") or "").strip()
+OIDC_REDIRECT_URI_DEFAULT = (
+    os.environ.get("OIDC_REDIRECT_URI")
+    or "http://localhost:8000/auth/oidc/callback"
+).strip()
+OIDC_UI_REDIRECT_URI_DEFAULT = (
+    os.environ.get("OIDC_UI_REDIRECT_URI") or "http://localhost:5173/"
+).strip()
+OIDC_SCOPES_DEFAULT = (
+    os.environ.get("OIDC_SCOPES") or "openid profile email"
+).strip()
+OIDC_USERNAME_CLAIM_DEFAULT = (
+    os.environ.get("OIDC_USERNAME_CLAIM") or "preferred_username"
+).strip()
+OIDC_ENABLED_DEFAULT = _env_bool("OIDC_ENABLED", False)
+
+LDAP_HOST_DEFAULT = (os.environ.get("LDAP_HOST") or "").strip()
+LDAP_PORT_DEFAULT = int((os.environ.get("LDAP_PORT") or "636").strip() or 636)
+LDAP_USE_SSL_DEFAULT = _env_bool("LDAP_USE_SSL", True)
+LDAP_VALIDATE_CERT_DEFAULT = _env_bool("LDAP_VALIDATE_CERT", True)
+LDAP_BIND_DN_DEFAULT = (os.environ.get("LDAP_BIND_DN") or "").strip()
+LDAP_BIND_PASSWORD_DEFAULT = (os.environ.get("LDAP_BIND_PASSWORD") or "").strip()
+LDAP_USER_BASE_DN_DEFAULT = (os.environ.get("LDAP_USER_BASE_DN") or "").strip()
+LDAP_USER_FILTER_DEFAULT = (
+    os.environ.get("LDAP_USER_FILTER") or "(uid={username})"
+).strip()
+LDAP_ENABLED_DEFAULT = _env_bool("LDAP_ENABLED", False)
+
+OIDC_DISCOVERY_CACHE = {"expires_at": 0.0, "data": None}
+OIDC_JWKS_CACHE = {"expires_at": 0.0, "keys": []}
+OIDC_PENDING_STATES = {}
 
 
 class ProxyConfigUpdate(BaseModel):
@@ -88,6 +146,27 @@ class ReportEmailRequest(BaseModel):
 class TargetUpdate(BaseModel):
     hostname: str
     port: int = 443
+
+
+class AuthConfigUpdate(BaseModel):
+    active_method: str = DEFAULT_AUTH_METHOD
+    oidc_enabled: bool = False
+    oidc_issuer_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = "http://localhost:8000/auth/oidc/callback"
+    oidc_ui_redirect_uri: str = "http://localhost:5173/"
+    oidc_scopes: str = "openid profile email"
+    oidc_username_claim: str = "preferred_username"
+    ldap_enabled: bool = False
+    ldap_host: str = ""
+    ldap_port: int = 636
+    ldap_use_ssl: bool = True
+    ldap_validate_cert: bool = True
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = ""
+    ldap_user_base_dn: str = ""
+    ldap_user_filter: str = "(uid={username})"
 
 
 REPORT_DEFINITIONS = {
@@ -293,6 +372,172 @@ def ensure_smtp_config_table(db):
     db.commit()
 
 
+def ensure_auth_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS auth_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                active_method TEXT NOT NULL DEFAULT 'local',
+                oidc_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                oidc_issuer_url TEXT NOT NULL DEFAULT '',
+                oidc_client_id TEXT NOT NULL DEFAULT '',
+                oidc_client_secret TEXT NOT NULL DEFAULT '',
+                oidc_redirect_uri TEXT NOT NULL DEFAULT 'http://localhost:8000/auth/oidc/callback',
+                oidc_ui_redirect_uri TEXT NOT NULL DEFAULT 'http://localhost:5173/',
+                oidc_scopes TEXT NOT NULL DEFAULT 'openid profile email',
+                oidc_username_claim TEXT NOT NULL DEFAULT 'preferred_username',
+                ldap_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                ldap_host TEXT NOT NULL DEFAULT '',
+                ldap_port INT NOT NULL DEFAULT 636,
+                ldap_use_ssl BOOLEAN NOT NULL DEFAULT TRUE,
+                ldap_validate_cert BOOLEAN NOT NULL DEFAULT TRUE,
+                ldap_bind_dn TEXT NOT NULL DEFAULT '',
+                ldap_bind_password TEXT NOT NULL DEFAULT '',
+                ldap_user_base_dn TEXT NOT NULL DEFAULT '',
+                ldap_user_filter TEXT NOT NULL DEFAULT '(uid={username})',
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT auth_config_singleton CHECK (id = 1),
+                CONSTRAINT auth_method_valid CHECK (
+                    active_method IN ('local', 'oidc', 'ldap')
+                )
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO auth_config (
+                id,
+                active_method,
+                oidc_enabled,
+                oidc_issuer_url,
+                oidc_client_id,
+                oidc_client_secret,
+                oidc_redirect_uri,
+                oidc_ui_redirect_uri,
+                oidc_scopes,
+                oidc_username_claim,
+                ldap_enabled,
+                ldap_host,
+                ldap_port,
+                ldap_use_ssl,
+                ldap_validate_cert,
+                ldap_bind_dn,
+                ldap_bind_password,
+                ldap_user_base_dn,
+                ldap_user_filter
+            )
+            VALUES (
+                1,
+                :active_method,
+                :oidc_enabled,
+                :oidc_issuer_url,
+                :oidc_client_id,
+                :oidc_client_secret,
+                :oidc_redirect_uri,
+                :oidc_ui_redirect_uri,
+                :oidc_scopes,
+                :oidc_username_claim,
+                :ldap_enabled,
+                :ldap_host,
+                :ldap_port,
+                :ldap_use_ssl,
+                :ldap_validate_cert,
+                :ldap_bind_dn,
+                :ldap_bind_password,
+                :ldap_user_base_dn,
+                :ldap_user_filter
+            )
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {
+            "active_method": DEFAULT_AUTH_METHOD,
+            "oidc_enabled": bool(OIDC_ENABLED_DEFAULT),
+            "oidc_issuer_url": OIDC_ISSUER_URL_DEFAULT,
+            "oidc_client_id": OIDC_CLIENT_ID_DEFAULT,
+            "oidc_client_secret": OIDC_CLIENT_SECRET_DEFAULT,
+            "oidc_redirect_uri": OIDC_REDIRECT_URI_DEFAULT,
+            "oidc_ui_redirect_uri": OIDC_UI_REDIRECT_URI_DEFAULT,
+            "oidc_scopes": OIDC_SCOPES_DEFAULT,
+            "oidc_username_claim": OIDC_USERNAME_CLAIM_DEFAULT,
+            "ldap_enabled": bool(LDAP_ENABLED_DEFAULT),
+            "ldap_host": LDAP_HOST_DEFAULT,
+            "ldap_port": int(LDAP_PORT_DEFAULT),
+            "ldap_use_ssl": bool(LDAP_USE_SSL_DEFAULT),
+            "ldap_validate_cert": bool(LDAP_VALIDATE_CERT_DEFAULT),
+            "ldap_bind_dn": LDAP_BIND_DN_DEFAULT,
+            "ldap_bind_password": LDAP_BIND_PASSWORD_DEFAULT,
+            "ldap_user_base_dn": LDAP_USER_BASE_DN_DEFAULT,
+            "ldap_user_filter": LDAP_USER_FILTER_DEFAULT or "(uid={username})",
+        },
+    )
+    db.commit()
+
+
+def read_auth_config(db) -> dict:
+    ensure_auth_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT
+              active_method,
+              oidc_enabled,
+              oidc_issuer_url,
+              oidc_client_id,
+              oidc_client_secret,
+              oidc_redirect_uri,
+              oidc_ui_redirect_uri,
+              oidc_scopes,
+              oidc_username_claim,
+              ldap_enabled,
+              ldap_host,
+              ldap_port,
+              ldap_use_ssl,
+              ldap_validate_cert,
+              ldap_bind_dn,
+              ldap_bind_password,
+              ldap_user_base_dn,
+              ldap_user_filter,
+              updated_at
+            FROM auth_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="auth config unavailable")
+    data = dict(row._mapping)
+    active_method = str(data.get("active_method") or DEFAULT_AUTH_METHOD).strip().lower()
+    if active_method not in AUTH_METHODS:
+        active_method = DEFAULT_AUTH_METHOD
+    return {
+        "active_method": active_method,
+        "oidc_enabled": bool(data.get("oidc_enabled")),
+        "oidc_issuer_url": str(data.get("oidc_issuer_url") or "").strip(),
+        "oidc_client_id": str(data.get("oidc_client_id") or "").strip(),
+        "oidc_has_client_secret": bool(data.get("oidc_client_secret")),
+        "oidc_client_secret": str(data.get("oidc_client_secret") or ""),
+        "oidc_redirect_uri": str(data.get("oidc_redirect_uri") or OIDC_REDIRECT_URI_DEFAULT).strip(),
+        "oidc_ui_redirect_uri": str(data.get("oidc_ui_redirect_uri") or OIDC_UI_REDIRECT_URI_DEFAULT).strip(),
+        "oidc_scopes": str(data.get("oidc_scopes") or OIDC_SCOPES_DEFAULT).strip(),
+        "oidc_username_claim": str(data.get("oidc_username_claim") or OIDC_USERNAME_CLAIM_DEFAULT).strip(),
+        "ldap_enabled": bool(data.get("ldap_enabled")),
+        "ldap_host": str(data.get("ldap_host") or "").strip(),
+        "ldap_port": int(data.get("ldap_port") or 636),
+        "ldap_use_ssl": bool(data.get("ldap_use_ssl")),
+        "ldap_validate_cert": bool(data.get("ldap_validate_cert")),
+        "ldap_bind_dn": str(data.get("ldap_bind_dn") or "").strip(),
+        "ldap_has_bind_password": bool(data.get("ldap_bind_password")),
+        "ldap_bind_password": str(data.get("ldap_bind_password") or ""),
+        "ldap_user_base_dn": str(data.get("ldap_user_base_dn") or "").strip(),
+        "ldap_user_filter": str(data.get("ldap_user_filter") or "(uid={username})").strip(),
+        "updated_at": data.get("updated_at"),
+    }
+
+
 def ensure_users_table(db):
     db.execute(
         text(
@@ -395,6 +640,57 @@ def ensure_event_logs_table(db):
             )
             """
         )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_logs_created_at
+            ON event_logs (created_at DESC)
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS idx_event_logs_level_created_at
+            ON event_logs (level, created_at DESC)
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE event_logs
+            SET level = 'info'
+            WHERE lower(trim(level)) NOT IN ('debug', 'info', 'warn', 'error')
+            """
+        )
+    )
+    db.commit()
+
+
+def _validate_event_log_level(value: str) -> str:
+    level = str(value or "").strip().lower()
+    if level not in EVENT_LOG_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "invalid level; expected one of: "
+                + ", ".join(EVENT_LOG_LEVELS)
+            ),
+        )
+    return level
+
+
+def prune_event_logs_retention(db):
+    db.execute(
+        text(
+            """
+            DELETE FROM event_logs
+            WHERE created_at < now() - (:days * INTERVAL '1 day')
+            """
+        ),
+        {"days": EVENT_LOG_RETENTION_DAYS},
     )
     db.commit()
 
@@ -574,6 +870,279 @@ def _clear_login_failures(request: Request, username: str):
     FAILED_LOGINS.pop(_login_key(request, username), None)
 
 
+def _load_auth_config() -> dict:
+    db = SessionLocal()
+    try:
+        return read_auth_config(db)
+    finally:
+        db.close()
+
+
+def _oidc_require_enabled(auth_cfg: dict):
+    active_method = str(auth_cfg.get("active_method") or DEFAULT_AUTH_METHOD)
+    enabled = bool(auth_cfg.get("oidc_enabled"))
+    has_required = bool(
+        str(auth_cfg.get("oidc_issuer_url") or "").strip()
+        and str(auth_cfg.get("oidc_client_id") or "").strip()
+    )
+    if active_method != "oidc" or not enabled or not has_required:
+        raise HTTPException(status_code=404, detail="OIDC is not enabled")
+
+
+def _oidc_b64url(data: bytes) -> str:
+    return (
+        base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+    )
+
+
+def _oidc_json_request(url: str, method: str = "GET", body: dict | None = None):
+    request_body = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        encoded = urllib.parse.urlencode(body).encode("utf-8")
+        request_body = encoded
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(
+        url=url,
+        data=request_body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            payload = response.read().decode("utf-8")
+            return json.loads(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OIDC upstream request failed: {exc}",
+        )
+
+
+def _oidc_get_discovery(auth_cfg: dict) -> dict:
+    now = time.time()
+    cached = OIDC_DISCOVERY_CACHE.get("data")
+    if cached and now < float(OIDC_DISCOVERY_CACHE.get("expires_at") or 0):
+        return cached
+    issuer = str(auth_cfg.get("oidc_issuer_url") or "").strip()
+    if not issuer:
+        raise HTTPException(status_code=500, detail="OIDC issuer is not configured")
+    issuer = issuer.rstrip("/")
+    data = _oidc_json_request(f"{issuer}/.well-known/openid-configuration")
+    OIDC_DISCOVERY_CACHE["data"] = data
+    OIDC_DISCOVERY_CACHE["expires_at"] = now + 300
+    return data
+
+
+def _oidc_get_jwks_keys(auth_cfg: dict) -> list[dict]:
+    now = time.time()
+    keys = OIDC_JWKS_CACHE.get("keys") or []
+    if keys and now < float(OIDC_JWKS_CACHE.get("expires_at") or 0):
+        return keys
+    discovery = _oidc_get_discovery(auth_cfg)
+    jwks_uri = str(discovery.get("jwks_uri") or "").strip()
+    if not jwks_uri:
+        raise HTTPException(status_code=500, detail="OIDC jwks_uri is missing")
+    jwks = _oidc_json_request(jwks_uri)
+    fresh_keys = list(jwks.get("keys") or [])
+    OIDC_JWKS_CACHE["keys"] = fresh_keys
+    OIDC_JWKS_CACHE["expires_at"] = now + 300
+    return fresh_keys
+
+
+def _oidc_pick_jwk(auth_cfg: dict, kid: str) -> dict:
+    for key in _oidc_get_jwks_keys(auth_cfg):
+        if str(key.get("kid") or "") == kid:
+            return key
+    raise HTTPException(status_code=401, detail="OIDC signing key not found")
+
+
+def _oidc_prune_pending_states():
+    now = time.time()
+    stale_keys = [
+        key
+        for key, value in OIDC_PENDING_STATES.items()
+        if now - float(value.get("created_at") or 0) > OIDC_STATE_TTL_SECONDS
+    ]
+    for key in stale_keys:
+        OIDC_PENDING_STATES.pop(key, None)
+
+
+def _oidc_normalize_ui_redirect(auth_cfg: dict, candidate: str) -> str:
+    configured = str(auth_cfg.get("oidc_ui_redirect_uri") or "").strip()
+    fallback = configured or "http://localhost:5173/"
+    value = (candidate or "").strip()
+    if not value:
+        return fallback
+    try:
+        target = urllib.parse.urlparse(value)
+        allowed = urllib.parse.urlparse(fallback)
+    except Exception:
+        return fallback
+    if (
+        target.scheme == allowed.scheme
+        and target.netloc == allowed.netloc
+        and value.startswith(f"{allowed.scheme}://{allowed.netloc}")
+    ):
+        return value
+    return fallback
+
+
+def _oidc_extract_username(claims: dict, auth_cfg: dict) -> str:
+    requested = str(auth_cfg.get("oidc_username_claim") or "").strip()
+    candidates = [requested] if requested else []
+    candidates.extend(["preferred_username", "upn", "email", "sub"])
+    seen = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        value = str(claims.get(key) or "").strip()
+        if value:
+            return value
+    raise HTTPException(
+        status_code=401,
+        detail="OIDC token does not contain a usable username claim",
+    )
+
+
+def _oidc_verify_and_extract_claims(
+    auth_cfg: dict, id_token: str, nonce: str
+) -> dict:
+    if not id_token:
+        raise HTTPException(status_code=401, detail="OIDC id_token is missing")
+    try:
+        header = jwt.get_unverified_header(id_token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="OIDC token header is invalid")
+    kid = str(header.get("kid") or "").strip()
+    if not kid:
+        raise HTTPException(status_code=401, detail="OIDC token kid is missing")
+    key = _oidc_pick_jwk(auth_cfg, kid)
+    issuer = str(auth_cfg.get("oidc_issuer_url") or "").strip()
+    client_id = str(auth_cfg.get("oidc_client_id") or "").strip()
+    try:
+        claims = jwt.decode(
+            id_token,
+            key,
+            algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+            audience=client_id,
+            issuer=issuer,
+            options={"verify_at_hash": False},
+        )
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail=f"OIDC token rejected: {exc}")
+    token_nonce = str(claims.get("nonce") or "")
+    if nonce and token_nonce != nonce:
+        raise HTTPException(status_code=401, detail="OIDC nonce mismatch")
+    return claims
+
+
+def _issue_token_for_active_username(db, username: str) -> str:
+    value = str(username or "").strip()
+    if not value:
+        raise HTTPException(status_code=401, detail="Invalid username")
+    user = db.execute(
+        text(
+            """
+            SELECT username
+            FROM users
+            WHERE username=:u AND is_active=true
+            """
+        ),
+        {"u": value},
+    ).fetchone()
+    if not user:
+        raise HTTPException(status_code=401, detail="User is not authorized")
+    return create_access_token({"sub": value})
+
+
+def _ldap_escape_filter_value(value: str) -> str:
+    try:
+        from ldap3.utils.conv import escape_filter_chars
+
+        return escape_filter_chars(value)
+    except Exception:
+        escaped = value.replace("\\", "\\5c").replace("*", "\\2a")
+        escaped = escaped.replace("(", "\\28").replace(")", "\\29")
+        return escaped.replace("\x00", "\\00")
+
+
+def _authenticate_ldap_username_password(auth_cfg: dict, username: str, password: str):
+    host = str(auth_cfg.get("ldap_host") or "").strip()
+    port = int(auth_cfg.get("ldap_port") or 636)
+    use_ssl = bool(auth_cfg.get("ldap_use_ssl"))
+    validate_cert = bool(auth_cfg.get("ldap_validate_cert"))
+    bind_dn = str(auth_cfg.get("ldap_bind_dn") or "").strip()
+    bind_password = str(auth_cfg.get("ldap_bind_password") or "")
+    base_dn = str(auth_cfg.get("ldap_user_base_dn") or "").strip()
+    user_filter = str(auth_cfg.get("ldap_user_filter") or "(uid={username})").strip()
+
+    if not host:
+        raise HTTPException(status_code=500, detail="LDAP host is not configured")
+    if not base_dn:
+        raise HTTPException(status_code=500, detail="LDAP user base DN is not configured")
+    if "{username}" not in user_filter:
+        raise HTTPException(
+            status_code=500,
+            detail="LDAP user filter must include {username}",
+        )
+
+    safe_username = _ldap_escape_filter_value(username)
+    filter_value = user_filter.replace("{username}", safe_username)
+    tls_validate = ssl.CERT_REQUIRED if validate_cert else ssl.CERT_NONE
+
+    try:
+        from ldap3 import ALL, Connection, Server, SUBTREE, Tls
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"LDAP dependency is not available: {exc}",
+        )
+
+    tls = Tls(validate=tls_validate)
+    server = Server(host=host, port=port, use_ssl=use_ssl, tls=tls, get_info=ALL)
+
+    conn = None
+    user_conn = None
+    try:
+        conn = Connection(
+            server,
+            user=bind_dn or None,
+            password=bind_password or None,
+            auto_bind=True,
+        )
+        if not conn.search(
+            search_base=base_dn,
+            search_filter=filter_value,
+            search_scope=SUBTREE,
+            attributes=[],
+            size_limit=1,
+        ):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not conn.entries:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        user_dn = str(conn.entries[0].entry_dn or "").strip()
+        if not user_dn:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        user_conn = Connection(
+            server,
+            user=user_dn,
+            password=password,
+            auto_bind=True,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    finally:
+        if user_conn is not None:
+            user_conn.unbind()
+        if conn is not None:
+            conn.unbind()
+
+
 def read_proxy_config(db):
     ensure_proxy_config_table(db)
     row = db.execute(
@@ -669,6 +1238,7 @@ def init_proxy_config():
         ensure_proxy_config_table(db)
         ensure_scheduler_config_table(db)
         ensure_smtp_config_table(db)
+        ensure_auth_config_table(db)
         ensure_target_dns_table(db)
         ensure_scans_error_message_column(db)
         ensure_users_table(db)
@@ -680,6 +1250,174 @@ def init_proxy_config():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/auth/oidc/config")
+def oidc_config():
+    auth_cfg = _load_auth_config()
+    is_enabled = (
+        str(auth_cfg.get("active_method") or "") == "oidc"
+        and bool(auth_cfg.get("oidc_enabled"))
+        and bool(str(auth_cfg.get("oidc_issuer_url") or "").strip())
+        and bool(str(auth_cfg.get("oidc_client_id") or "").strip())
+    )
+    return {
+        "enabled": is_enabled,
+        "username_claim": str(auth_cfg.get("oidc_username_claim") or ""),
+    }
+
+
+@app.get("/auth/method")
+def auth_method():
+    auth_cfg = _load_auth_config()
+    active_method = str(auth_cfg.get("active_method") or DEFAULT_AUTH_METHOD)
+    oidc_ready = bool(
+        active_method == "oidc"
+        and auth_cfg.get("oidc_enabled")
+        and str(auth_cfg.get("oidc_issuer_url") or "").strip()
+        and str(auth_cfg.get("oidc_client_id") or "").strip()
+    )
+    ldap_ready = bool(
+        active_method == "ldap"
+        and auth_cfg.get("ldap_enabled")
+        and str(auth_cfg.get("ldap_host") or "").strip()
+    )
+    return {
+        "active_method": active_method,
+        "password_login_enabled": active_method in {"local", "ldap"},
+        "oidc_enabled": oidc_ready,
+        "ldap_enabled": ldap_ready,
+    }
+
+
+@app.get("/auth/oidc/login")
+def oidc_login(ui_redirect: str = ""):
+    auth_cfg = _load_auth_config()
+    _oidc_require_enabled(auth_cfg)
+    _oidc_prune_pending_states()
+    discovery = _oidc_get_discovery(auth_cfg)
+    authorization_endpoint = str(
+        discovery.get("authorization_endpoint") or ""
+    ).strip()
+    if not authorization_endpoint:
+        raise HTTPException(
+            status_code=500, detail="OIDC authorization endpoint is missing"
+        )
+
+    state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(64)
+    challenge = _oidc_b64url(
+        hashlib.sha256(code_verifier.encode("ascii")).digest()
+    )
+    target_ui_redirect = _oidc_normalize_ui_redirect(auth_cfg, ui_redirect)
+
+    OIDC_PENDING_STATES[state] = {
+        "created_at": time.time(),
+        "nonce": nonce,
+        "code_verifier": code_verifier,
+        "ui_redirect": target_ui_redirect,
+        "oidc_issuer_url": str(auth_cfg.get("oidc_issuer_url") or "").strip(),
+        "oidc_client_id": str(auth_cfg.get("oidc_client_id") or "").strip(),
+    }
+
+    params = {
+        "client_id": str(auth_cfg.get("oidc_client_id") or "").strip(),
+        "response_type": "code",
+        "scope": str(auth_cfg.get("oidc_scopes") or OIDC_SCOPES_DEFAULT).strip(),
+        "redirect_uri": str(auth_cfg.get("oidc_redirect_uri") or OIDC_REDIRECT_URI_DEFAULT).strip(),
+        "state": state,
+        "nonce": nonce,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    url = f"{authorization_endpoint}?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(url=url, status_code=302)
+
+
+@app.get("/auth/oidc/callback")
+def oidc_callback(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+):
+    auth_cfg = _load_auth_config()
+    _oidc_require_enabled(auth_cfg)
+    if error:
+        fallback_target = _oidc_normalize_ui_redirect(
+            auth_cfg,
+            str(auth_cfg.get("oidc_ui_redirect_uri") or OIDC_UI_REDIRECT_URI_DEFAULT),
+        )
+        target = f"{fallback_target}#oidc_error={urllib.parse.quote(error)}"
+        if error_description:
+            target += (
+                f"&oidc_error_description="
+                f"{urllib.parse.quote(error_description)}"
+            )
+        return RedirectResponse(url=target, status_code=302)
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing OIDC code or state")
+
+    _oidc_prune_pending_states()
+    pending = OIDC_PENDING_STATES.pop(state, None)
+    if not pending:
+        raise HTTPException(status_code=400, detail="Invalid or expired OIDC state")
+
+    discovery = _oidc_get_discovery(auth_cfg)
+    token_endpoint = str(discovery.get("token_endpoint") or "").strip()
+    if not token_endpoint:
+        raise HTTPException(status_code=500, detail="OIDC token endpoint is missing")
+
+    token_payload = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": str(auth_cfg.get("oidc_redirect_uri") or OIDC_REDIRECT_URI_DEFAULT).strip(),
+        "client_id": str(auth_cfg.get("oidc_client_id") or "").strip(),
+        "code_verifier": str(pending.get("code_verifier") or ""),
+    }
+    client_secret = str(auth_cfg.get("oidc_client_secret") or "")
+    if client_secret:
+        token_payload["client_secret"] = client_secret
+    token_response = _oidc_json_request(
+        token_endpoint, method="POST", body=token_payload
+    )
+    id_token = str(token_response.get("id_token") or "")
+    claims = _oidc_verify_and_extract_claims(
+        auth_cfg=auth_cfg,
+        id_token=id_token,
+        nonce=str(pending.get("nonce") or ""),
+    )
+    mapped_username = _oidc_extract_username(claims, auth_cfg)
+
+    db = SessionLocal()
+    try:
+        ensure_users_table(db)
+        try:
+            token = _issue_token_for_active_username(db, mapped_username)
+        except HTTPException:
+            target = (
+                f"{str(pending.get('ui_redirect') or auth_cfg.get('oidc_ui_redirect_uri') or OIDC_UI_REDIRECT_URI_DEFAULT)}"
+                f"#oidc_error=unauthorized_user"
+            )
+            return RedirectResponse(url=target, status_code=302)
+    finally:
+        db.close()
+
+    safe_target = _oidc_normalize_ui_redirect(
+        auth_cfg,
+        str(
+            pending.get("ui_redirect")
+            or auth_cfg.get("oidc_ui_redirect_uri")
+            or OIDC_UI_REDIRECT_URI_DEFAULT
+        ),
+    )
+    redirect_url = (
+        f"{safe_target}#app_token={urllib.parse.quote(token)}"
+        f"&username={urllib.parse.quote(mapped_username)}"
+    )
+    return RedirectResponse(url=redirect_url, status_code=302)
 
 
 @app.post("/targets")
@@ -951,22 +1689,45 @@ def run_target_scan(target_id: UUID, user=Depends(get_current_user)):
 def login(
     request: Request, form_data: OAuth2PasswordRequestForm = Depends()
 ):
+    username = (form_data.username or "").strip()
+    password = form_data.password or ""
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+
     db = SessionLocal()
     try:
-        _check_login_rate_limit(request, form_data.username)
-        user = db.execute(
-            text("SELECT * FROM users WHERE username=:u"),
-            {"u": form_data.username},
-        ).fetchone()
+        ensure_auth_config_table(db)
+        auth_cfg = read_auth_config(db)
+        active_method = str(auth_cfg.get("active_method") or DEFAULT_AUTH_METHOD)
 
-        if not user or not verify_password(
-            form_data.password, user.password_hash
-        ):
-            _record_login_failure(request, form_data.username)
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        _check_login_rate_limit(request, username)
+        if active_method == "oidc":
+            _record_login_failure(request, username)
+            raise HTTPException(
+                status_code=400,
+                detail="Password login is disabled. Use OpenID login.",
+            )
 
-        _clear_login_failures(request, form_data.username)
-        token = create_access_token({"sub": user.username})
+        if active_method == "local":
+            user = db.execute(
+                text("SELECT * FROM users WHERE username=:u"),
+                {"u": username},
+            ).fetchone()
+            if not user or not verify_password(password, user.password_hash):
+                _record_login_failure(request, username)
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            token = _issue_token_for_active_username(db, username)
+        elif active_method == "ldap":
+            if not bool(auth_cfg.get("ldap_enabled")):
+                _record_login_failure(request, username)
+                raise HTTPException(status_code=400, detail="LDAP login is disabled")
+            _authenticate_ldap_username_password(auth_cfg, username, password)
+            token = _issue_token_for_active_username(db, username)
+        else:
+            _record_login_failure(request, username)
+            raise HTTPException(status_code=500, detail="Unsupported auth method")
+
+        _clear_login_failures(request, username)
         return {"access_token": token, "token_type": "bearer"}
     finally:
         db.close()
@@ -993,16 +1754,32 @@ def list_users(user=Depends(get_current_admin)):
 
 @app.get("/admin/event-logs")
 def list_event_logs(
-    limit: int = 100, offset: int = 0, user=Depends(get_current_admin)
+    limit: int = EVENT_LOG_DEFAULT_LIMIT,
+    offset: int = 0,
+    level: str = "",
+    user=Depends(get_current_admin),
 ):
     db = SessionLocal()
     try:
         ensure_event_logs_table(db)
-        safe_limit = max(1, min(int(limit or 100), 500))
+        prune_event_logs_retention(db)
+        safe_limit = max(1, min(int(limit or EVENT_LOG_DEFAULT_LIMIT), 500))
         safe_offset = max(0, int(offset or 0))
+        level_value = str(level or "").strip().lower()
+        use_level_filter = level_value not in ("", "all")
+        level_filter = (
+            _validate_event_log_level(level_value) if use_level_filter else ""
+        )
 
         total_row = db.execute(
-            text("SELECT COUNT(*) AS total FROM event_logs")
+            text(
+                """
+                SELECT COUNT(*) AS total
+                FROM event_logs
+                WHERE (:use_level_filter = FALSE OR level = :level)
+                """
+            ),
+            {"use_level_filter": use_level_filter, "level": level_filter},
         ).fetchone()
         total = int(total_row._mapping["total"]) if total_row else 0
 
@@ -1011,11 +1788,17 @@ def list_event_logs(
                 """
                 SELECT id, created_at, username, source, level, message
                 FROM event_logs
+                WHERE (:use_level_filter = FALSE OR level = :level)
                 ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset
                 """
             ),
-            {"limit": safe_limit, "offset": safe_offset},
+            {
+                "use_level_filter": use_level_filter,
+                "level": level_filter,
+                "limit": safe_limit,
+                "offset": safe_offset,
+            },
         ).fetchall()
         return {"items": [dict(r._mapping) for r in rows], "total": total}
     finally:
@@ -1031,6 +1814,7 @@ def create_event_log(payload: EventLogCreate, user=Depends(get_current_admin)):
     db = SessionLocal()
     try:
         ensure_event_logs_table(db)
+        prune_event_logs_retention(db)
         db.execute(
             text(
                 """
@@ -1041,7 +1825,7 @@ def create_event_log(payload: EventLogCreate, user=Depends(get_current_admin)):
             {
                 "u": str(user.get("username") or ""),
                 "s": str(payload.source or "ui").strip()[:50],
-                "l": str(payload.level or "info").strip()[:20],
+                "l": _validate_event_log_level(payload.level or "info"),
                 "m": message[:4000],
             },
         )
@@ -1378,6 +2162,169 @@ def update_scheduler_config(
         )
         db.commit()
         return read_scheduler_config(db)
+    finally:
+        db.close()
+
+
+@app.get("/config/auth")
+def get_auth_config(user=Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        data = read_auth_config(db)
+        return {
+            "active_method": data["active_method"],
+            "oidc_enabled": data["oidc_enabled"],
+            "oidc_issuer_url": data["oidc_issuer_url"],
+            "oidc_client_id": data["oidc_client_id"],
+            "oidc_has_client_secret": data["oidc_has_client_secret"],
+            "oidc_redirect_uri": data["oidc_redirect_uri"],
+            "oidc_ui_redirect_uri": data["oidc_ui_redirect_uri"],
+            "oidc_scopes": data["oidc_scopes"],
+            "oidc_username_claim": data["oidc_username_claim"],
+            "ldap_enabled": data["ldap_enabled"],
+            "ldap_host": data["ldap_host"],
+            "ldap_port": data["ldap_port"],
+            "ldap_use_ssl": data["ldap_use_ssl"],
+            "ldap_validate_cert": data["ldap_validate_cert"],
+            "ldap_bind_dn": data["ldap_bind_dn"],
+            "ldap_has_bind_password": data["ldap_has_bind_password"],
+            "ldap_user_base_dn": data["ldap_user_base_dn"],
+            "ldap_user_filter": data["ldap_user_filter"],
+            "updated_at": data.get("updated_at"),
+        }
+    finally:
+        db.close()
+
+
+@app.put("/config/auth")
+def update_auth_config(payload: AuthConfigUpdate, user=Depends(get_current_admin)):
+    active_method = str(payload.active_method or DEFAULT_AUTH_METHOD).strip().lower()
+    if active_method not in AUTH_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail="active_method must be one of: local, oidc, ldap",
+        )
+
+    oidc_issuer_url = str(payload.oidc_issuer_url or "").strip()
+    oidc_client_id = str(payload.oidc_client_id or "").strip()
+    oidc_redirect_uri = str(
+        payload.oidc_redirect_uri or OIDC_REDIRECT_URI_DEFAULT
+    ).strip()
+    oidc_ui_redirect_uri = str(
+        payload.oidc_ui_redirect_uri or OIDC_UI_REDIRECT_URI_DEFAULT
+    ).strip()
+    oidc_scopes = str(payload.oidc_scopes or OIDC_SCOPES_DEFAULT).strip()
+    oidc_username_claim = str(
+        payload.oidc_username_claim or OIDC_USERNAME_CLAIM_DEFAULT
+    ).strip()
+
+    ldap_host = str(payload.ldap_host or "").strip()
+    ldap_bind_dn = str(payload.ldap_bind_dn or "").strip()
+    ldap_user_base_dn = str(payload.ldap_user_base_dn or "").strip()
+    ldap_user_filter = str(payload.ldap_user_filter or "(uid={username})").strip()
+    ldap_port = int(payload.ldap_port or 636)
+    ldap_enabled = bool(payload.ldap_enabled)
+    oidc_enabled = bool(payload.oidc_enabled)
+
+    if ldap_port < 1 or ldap_port > 65535:
+        raise HTTPException(status_code=400, detail="ldap_port must be 1-65535")
+    if "{username}" not in ldap_user_filter:
+        raise HTTPException(
+            status_code=400,
+            detail="ldap_user_filter must include {username}",
+        )
+    if active_method == "oidc":
+        if not oidc_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="oidc_enabled must be true when active_method=oidc",
+            )
+        if not oidc_issuer_url or not oidc_client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="oidc_issuer_url and oidc_client_id are required for OIDC",
+            )
+    if active_method == "ldap":
+        if not ldap_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="ldap_enabled must be true when active_method=ldap",
+            )
+        if not ldap_host or not ldap_user_base_dn:
+            raise HTTPException(
+                status_code=400,
+                detail="ldap_host and ldap_user_base_dn are required for LDAP",
+            )
+
+    db = SessionLocal()
+    try:
+        ensure_auth_config_table(db)
+        current = read_auth_config(db)
+
+        oidc_client_secret = (
+            str(payload.oidc_client_secret or "")
+            if payload.oidc_client_secret not in (None, "")
+            else str(current.get("oidc_client_secret") or "")
+        )
+        ldap_bind_password = (
+            str(payload.ldap_bind_password or "")
+            if payload.ldap_bind_password not in (None, "")
+            else str(current.get("ldap_bind_password") or "")
+        )
+
+        db.execute(
+            text(
+                """
+                UPDATE auth_config
+                SET active_method=:active_method,
+                    oidc_enabled=:oidc_enabled,
+                    oidc_issuer_url=:oidc_issuer_url,
+                    oidc_client_id=:oidc_client_id,
+                    oidc_client_secret=:oidc_client_secret,
+                    oidc_redirect_uri=:oidc_redirect_uri,
+                    oidc_ui_redirect_uri=:oidc_ui_redirect_uri,
+                    oidc_scopes=:oidc_scopes,
+                    oidc_username_claim=:oidc_username_claim,
+                    ldap_enabled=:ldap_enabled,
+                    ldap_host=:ldap_host,
+                    ldap_port=:ldap_port,
+                    ldap_use_ssl=:ldap_use_ssl,
+                    ldap_validate_cert=:ldap_validate_cert,
+                    ldap_bind_dn=:ldap_bind_dn,
+                    ldap_bind_password=:ldap_bind_password,
+                    ldap_user_base_dn=:ldap_user_base_dn,
+                    ldap_user_filter=:ldap_user_filter,
+                    updated_at=now()
+                WHERE id=1
+                """
+            ),
+            {
+                "active_method": active_method,
+                "oidc_enabled": oidc_enabled,
+                "oidc_issuer_url": oidc_issuer_url,
+                "oidc_client_id": oidc_client_id,
+                "oidc_client_secret": oidc_client_secret,
+                "oidc_redirect_uri": oidc_redirect_uri,
+                "oidc_ui_redirect_uri": oidc_ui_redirect_uri,
+                "oidc_scopes": oidc_scopes,
+                "oidc_username_claim": oidc_username_claim,
+                "ldap_enabled": ldap_enabled,
+                "ldap_host": ldap_host,
+                "ldap_port": ldap_port,
+                "ldap_use_ssl": bool(payload.ldap_use_ssl),
+                "ldap_validate_cert": bool(payload.ldap_validate_cert),
+                "ldap_bind_dn": ldap_bind_dn,
+                "ldap_bind_password": ldap_bind_password,
+                "ldap_user_base_dn": ldap_user_base_dn,
+                "ldap_user_filter": ldap_user_filter,
+            },
+        )
+        db.commit()
+        OIDC_DISCOVERY_CACHE["data"] = None
+        OIDC_DISCOVERY_CACHE["expires_at"] = 0.0
+        OIDC_JWKS_CACHE["keys"] = []
+        OIDC_JWKS_CACHE["expires_at"] = 0.0
+        return get_auth_config(user)
     finally:
         db.close()
 
