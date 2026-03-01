@@ -1766,40 +1766,61 @@ def list_event_logs(
         safe_limit = max(1, min(int(limit or EVENT_LOG_DEFAULT_LIMIT), 500))
         safe_offset = max(0, int(offset or 0))
         level_value = str(level or "").strip().lower()
-        use_level_filter = level_value not in ("", "all")
-        level_filter = (
-            _validate_event_log_level(level_value) if use_level_filter else ""
-        )
+        level_filter = None
+        if level_value not in ("", "all"):
+            level_filter = _validate_event_log_level(level_value)
 
-        total_row = db.execute(
-            text(
-                """
-                SELECT COUNT(*) AS total
-                FROM event_logs
-                WHERE (:use_level_filter = FALSE OR level = :level)
-                """
-            ),
-            {"use_level_filter": use_level_filter, "level": level_filter},
-        ).fetchone()
+        if level_filter is None:
+            total_row = db.execute(
+                text(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM event_logs
+                    """
+                )
+            ).fetchone()
+            rows = db.execute(
+                text(
+                    """
+                    SELECT id, created_at, username, source, level, message
+                    FROM event_logs
+                    ORDER BY created_at DESC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                {
+                    "limit": safe_limit,
+                    "offset": safe_offset,
+                },
+            ).fetchall()
+        else:
+            total_row = db.execute(
+                text(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM event_logs
+                    WHERE level = :level
+                    """
+                ),
+                {"level": level_filter},
+            ).fetchone()
+            rows = db.execute(
+                text(
+                    """
+                    SELECT id, created_at, username, source, level, message
+                    FROM event_logs
+                    WHERE level = :level
+                    ORDER BY created_at DESC
+                    LIMIT :limit OFFSET :offset
+                    """
+                ),
+                {
+                    "level": level_filter,
+                    "limit": safe_limit,
+                    "offset": safe_offset,
+                },
+            ).fetchall()
         total = int(total_row._mapping["total"]) if total_row else 0
-
-        rows = db.execute(
-            text(
-                """
-                SELECT id, created_at, username, source, level, message
-                FROM event_logs
-                WHERE (:use_level_filter = FALSE OR level = :level)
-                ORDER BY created_at DESC
-                LIMIT :limit OFFSET :offset
-                """
-            ),
-            {
-                "use_level_filter": use_level_filter,
-                "level": level_filter,
-                "limit": safe_limit,
-                "offset": safe_offset,
-            },
-        ).fetchall()
         return {"items": [dict(r._mapping) for r in rows], "total": total}
     finally:
         db.close()

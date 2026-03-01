@@ -2493,13 +2493,35 @@ async function refreshEventLogs() {
     const data = await apiRequest(`/admin/event-logs?${query.toString()}`, {
       method: "GET",
     });
-    pagination.eventLogs.total = data.total ?? 0;
+    const serverRows = Array.isArray(data.items) ? data.items : [];
+    const filteredRows =
+      selectedLevel === "all"
+        ? serverRows
+        : serverRows.filter(
+            (row) =>
+              String(row?.level || "")
+                .trim()
+                .toLowerCase() === selectedLevel
+          );
+    let total = data.total ?? 0;
+    if (selectedLevel !== "all") {
+      const backendAppliedFilter = serverRows.every(
+        (row) =>
+          String(row?.level || "")
+            .trim()
+            .toLowerCase() === selectedLevel
+      );
+      if (!backendAppliedFilter) {
+        total = offset + filteredRows.length;
+      }
+    }
+    pagination.eventLogs.total = total;
     updatePaginationUI("eventLogs", {
       prevBtn: ui.eventLogPrevBtn,
       nextBtn: ui.eventLogNextBtn,
       pageInfo: ui.eventLogPageInfo,
     });
-    renderEventLogs(data.items || []);
+    renderEventLogs(filteredRows);
   } catch (error) {
     ui.eventLogBody.innerHTML =
       "<tr><td colspan='5' class='muted'>Failed to load event history</td></tr>";
