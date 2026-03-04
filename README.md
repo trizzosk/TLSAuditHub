@@ -117,6 +117,20 @@ Usage flow:
 1. `docker compose up`
 2. Open `http://localhost:5173`
 
+#### UI API base URL behavior
+- When UI runs on `localhost:5173` or `127.0.0.1:5173`, it targets API on the same host at port `8000`.
+- For non-dev hostnames, UI defaults to same-origin `/api`.
+- Optional browser override:
+  - `localStorage.setItem("tlsaudithub_api_base_url", "http://your-host:8000")`
+
+#### CORS defaults
+- API allows these origins by default:
+  - `http://localhost:5173`
+  - `http://127.0.0.1:5173`
+  - `http://[::1]:5173`
+- Override with env var:
+  - `CORS_ALLOW_ORIGINS=http://host1:5173,http://host2:5173`
+
 ### Run behind reverse proxy with SSL offload (single exposed port)
 Use this model when clients cannot reach backend port `8000` directly (for example, VLAN/firewall restrictions).
 

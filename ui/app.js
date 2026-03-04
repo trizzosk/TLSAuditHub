@@ -182,7 +182,16 @@ let activeAdminPage = "adminUsersPage";
 const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
 function baseUrl() {
-  return "http://localhost:8000";
+  const explicit = window.localStorage.getItem("tlsaudithub_api_base_url");
+  if (explicit) {
+    return explicit.replace(/\/+$/, "");
+  }
+  const host = window.location.hostname || "localhost";
+  const protocol = window.location.protocol || "http:";
+  if (window.location.port === "5173" || host === "localhost" || host === "127.0.0.1") {
+    return `${protocol}//${host}:8000`;
+  }
+  return `${protocol}//${host}/api`;
 }
 
 function persistEventLog(message, level = "info", source = "ui") {
@@ -356,7 +365,11 @@ async function login(event) {
     setToken(data.access_token, username);
     ui.authPassword.value = "";
     log(`Login successful for ${username}.`);
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (error) {
+      log(`Post-login refresh warning: ${error.message}`);
+    }
   } catch (error) {
     setToken("");
     log(`Login failed: ${error.message}`);
@@ -2677,16 +2690,25 @@ async function refreshAll() {
   if (!accessToken) {
     return;
   }
-  await Promise.all([
-    loadDashboard(),
-    refreshTargets(),
-    refreshSpoofable(),
-    refreshJobs(),
-    refreshUsers(),
-    loadProxyConfig(),
-    loadSchedulerConfig(),
-    loadSmtpConfig(),
-  ]);
+  const tasks = [
+    ["dashboard", loadDashboard],
+    ["targets", refreshTargets],
+    ["spoofable", refreshSpoofable],
+    ["jobs", refreshJobs],
+    ["users", refreshUsers],
+    ["proxy", loadProxyConfig],
+    ["scheduler", loadSchedulerConfig],
+    ["smtp", loadSmtpConfig],
+  ];
+  const results = await Promise.allSettled(
+    tasks.map(([, fn]) => fn())
+  );
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      const [name] = tasks[index];
+      log(`Refresh ${name} failed: ${result.reason?.message || result.reason}`);
+    }
+  });
 }
 
 ui.targetForm.addEventListener("submit", addTarget);

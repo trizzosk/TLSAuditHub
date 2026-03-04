@@ -224,7 +224,8 @@ REPORT_DEFINITIONS = {
 cors_allow_origins = [
     origin.strip()
     for origin in os.environ.get(
-        "CORS_ALLOW_ORIGINS", "http://localhost:5173"
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173",
     ).split(",")
     if origin.strip()
 ]
