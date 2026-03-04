@@ -1,0 +1,339 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: tlsaudithub
+  annotations:
+    description: "TLSAuditHub application stack for OpenShift (api/ui/worker/scheduler)."
+parameters:
+  - name: APP_NAME
+    value: tlsaudithub
+  - name: API_IMAGE
+    required: true
+    description: "Full image reference for API container"
+  - name: UI_IMAGE
+    required: true
+    description: "Full image reference for UI container"
+  - name: WORKER_IMAGE
+    required: true
+    description: "Full image reference for worker/scheduler container"
+  - name: JWT_SECRET_KEY
+    required: true
+    generate: expression
+    from: "[a-zA-Z0-9]{48}"
+  - name: JWT_ALGORITHM
+    value: HS256
+  - name: JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+    value: "60"
+  - name: DATABASE_URL
+    value: postgresql://sslyze:sslyze@postgresql:5432/sslyze
+  - name: CELERY_BROKER_URL
+    value: redis://redis:6379/0
+  - name: APP_ENV
+    value: production
+  - name: DNS_NAMESERVERS
+    value: ""
+  - name: DNS_PRIVATE_NAMESERVERS
+    value: ""
+  - name: DNS_PUBLIC_NAMESERVERS
+    value: ""
+  - name: DNS_LIFETIME_SECONDS
+    value: "8"
+  - name: DNS_TIMEOUT_SECONDS
+    value: "3"
+  - name: DNS_ATTEMPTS
+    value: "2"
+  - name: DNS_USE_SEARCH
+    value: "true"
+  - name: CORS_ALLOW_ORIGINS
+    value: "http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173"
+  - name: API_BASE_URL
+    required: true
+    description: "Public API URL consumed by UI, e.g. https://tlsaudithub-api.apps.cluster.example.com"
+objects:
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: ${APP_NAME}-secrets
+    type: Opaque
+    stringData:
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ${APP_NAME}-api-config
+    data:
+      JWT_ALGORITHM: ${JWT_ALGORITHM}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
+      APP_ENV: ${APP_ENV}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      DNS_NAMESERVERS: ${DNS_NAMESERVERS}
+      DNS_PRIVATE_NAMESERVERS: ${DNS_PRIVATE_NAMESERVERS}
+      DNS_PUBLIC_NAMESERVERS: ${DNS_PUBLIC_NAMESERVERS}
+      DNS_LIFETIME_SECONDS: ${DNS_LIFETIME_SECONDS}
+      DNS_TIMEOUT_SECONDS: ${DNS_TIMEOUT_SECONDS}
+      DNS_ATTEMPTS: ${DNS_ATTEMPTS}
+      DNS_USE_SEARCH: ${DNS_USE_SEARCH}
+
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: ${APP_NAME}-ui-runtime
+    data:
+      config.js: |
+        window.TLSAUDITHUB_API_BASE_URL = "${API_BASE_URL}";
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${APP_NAME}-api
+      labels:
+        app: ${APP_NAME}
+        component: api
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: ${APP_NAME}
+          component: api
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            component: api
+        spec:
+          containers:
+            - name: api
+              image: ${API_IMAGE}
+              imagePullPolicy: IfNotPresent
+              ports:
+                - containerPort: 8000
+                  name: http
+              envFrom:
+                - configMapRef:
+                    name: ${APP_NAME}-api-config
+              env:
+                - name: JWT_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: JWT_SECRET_KEY
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: DATABASE_URL
+                - name: CELERY_BROKER_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: CELERY_BROKER_URL
+              readinessProbe:
+                httpGet:
+                  path: /auth/method
+                  port: http
+                initialDelaySeconds: 10
+                periodSeconds: 10
+              livenessProbe:
+                httpGet:
+                  path: /auth/method
+                  port: http
+                initialDelaySeconds: 20
+                periodSeconds: 20
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: ${APP_NAME}-api
+      labels:
+        app: ${APP_NAME}
+        component: api
+    spec:
+      selector:
+        app: ${APP_NAME}
+        component: api
+      ports:
+        - name: http
+          port: 8000
+          targetPort: http
+
+  - apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      name: ${APP_NAME}-api
+      labels:
+        app: ${APP_NAME}
+        component: api
+    spec:
+      to:
+        kind: Service
+        name: ${APP_NAME}-api
+      port:
+        targetPort: http
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${APP_NAME}-ui
+      labels:
+        app: ${APP_NAME}
+        component: ui
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: ${APP_NAME}
+          component: ui
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            component: ui
+        spec:
+          containers:
+            - name: ui
+              image: ${UI_IMAGE}
+              imagePullPolicy: IfNotPresent
+              ports:
+                - containerPort: 5173
+                  name: http
+              volumeMounts:
+                - name: ui-runtime
+                  mountPath: /app/config.js
+                  subPath: config.js
+              readinessProbe:
+                httpGet:
+                  path: /
+                  port: http
+                initialDelaySeconds: 5
+                periodSeconds: 10
+              livenessProbe:
+                httpGet:
+                  path: /
+                  port: http
+                initialDelaySeconds: 15
+                periodSeconds: 20
+          volumes:
+            - name: ui-runtime
+              configMap:
+                name: ${APP_NAME}-ui-runtime
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: ${APP_NAME}-ui
+      labels:
+        app: ${APP_NAME}
+        component: ui
+    spec:
+      selector:
+        app: ${APP_NAME}
+        component: ui
+      ports:
+        - name: http
+          port: 5173
+          targetPort: http
+
+  - apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      name: ${APP_NAME}-ui
+      labels:
+        app: ${APP_NAME}
+        component: ui
+    spec:
+      to:
+        kind: Service
+        name: ${APP_NAME}-ui
+      port:
+        targetPort: http
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${APP_NAME}-worker
+      labels:
+        app: ${APP_NAME}
+        component: worker
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: ${APP_NAME}
+          component: worker
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            component: worker
+        spec:
+          containers:
+            - name: worker
+              image: ${WORKER_IMAGE}
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: DATABASE_URL
+                - name: CELERY_BROKER_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: CELERY_BROKER_URL
+              envFrom:
+                - configMapRef:
+                    name: ${APP_NAME}-api-config
+
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: ${APP_NAME}-scheduler
+      labels:
+        app: ${APP_NAME}
+        component: scheduler
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: ${APP_NAME}
+          component: scheduler
+      template:
+        metadata:
+          labels:
+            app: ${APP_NAME}
+            component: scheduler
+        spec:
+          containers:
+            - name: scheduler
+              image: ${WORKER_IMAGE}
+              imagePullPolicy: IfNotPresent
+              command:
+                - celery
+                - -A
+                - worker
+                - beat
+                - --loglevel=info
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: DATABASE_URL
+                - name: CELERY_BROKER_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP_NAME}-secrets
+                      key: CELERY_BROKER_URL
+              envFrom:
+                - configMapRef:
+                    name: ${APP_NAME}-api-config

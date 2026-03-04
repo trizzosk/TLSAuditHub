@@ -17,6 +17,7 @@ import uuid
 import json
 import re
 import ssl
+import inspect
 from fnmatch import fnmatchcase
 from diff import diff_sets, diff_dict
 from normalize import normalize_scan
@@ -33,9 +34,11 @@ from urllib.request import (
 )
 from urllib.error import HTTPError, URLError
 
+DNS_SCOPE_VALUES = {"system", "private", "public"}
+
 celery = Celery(
     "worker",
-    broker="redis://redis:6379/0",
+    broker=os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0"),
 )
 
 celery.conf.beat_schedule = {
@@ -236,9 +239,10 @@ def run_scan(target_id: str):
     scan_id = None
 
     try:
+        _ensure_targets_dns_scope_column(db)
         ensure_scans_error_message_column(db)
         target_row = db.execute(
-            text("SELECT hostname, port FROM targets WHERE id=:id"),
+            text("SELECT hostname, port, dns_scope FROM targets WHERE id=:id"),
             {"id": target_id},
         ).fetchone()
         if not target_row:
@@ -271,10 +275,13 @@ def run_scan(target_id: str):
             )
 
         scanner = Scanner()
-        server_location = ServerNetworkLocation(
+        dns_scope = _normalize_dns_scope(target.get("dns_scope"))
+        resolved_ip = _resolve_scan_ip(target["hostname"], dns_scope)
+        server_location = _make_server_location(
             hostname=target["hostname"],
             port=target["port"],
-            http_proxy_settings=proxy_settings,
+            proxy_settings=proxy_settings,
+            resolved_ip=resolved_ip,
         )
         request = ServerScanRequest(
             server_location=server_location,
@@ -397,14 +404,16 @@ def run_dns_lookup(target_id: str):
     db = SessionLocal()
     try:
         _ensure_target_dns_table(db)
+        _ensure_targets_dns_scope_column(db)
         row = db.execute(
-            text("SELECT hostname FROM targets WHERE id=:id"),
+            text("SELECT hostname, dns_scope FROM targets WHERE id=:id"),
             {"id": target_id},
         ).fetchone()
         if not row:
             return
         hostname = row._mapping["hostname"]
-        payload = _build_dns_payload(hostname)
+        dns_scope = _normalize_dns_scope(row._mapping.get("dns_scope"))
+        payload = _build_dns_payload(hostname, dns_scope)
         db.execute(
             text(
                 """
@@ -698,6 +707,44 @@ def _ensure_target_dns_table(db):
     db.commit()
 
 
+def _ensure_targets_dns_scope_column(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS dns_scope TEXT NOT NULL DEFAULT 'system'
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET dns_scope='system'
+            WHERE dns_scope IS NULL OR trim(dns_scope) = ''
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            DROP CONSTRAINT IF EXISTS targets_dns_scope_check
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD CONSTRAINT targets_dns_scope_check
+            CHECK (dns_scope IN ('system', 'private', 'public'))
+            """
+        )
+    )
+    db.commit()
+
+
 def _safe_list(value):
     if value is None:
         return []
@@ -754,6 +801,28 @@ def _dns_config():
     }
 
 
+def _normalize_dns_scope(value):
+    scope = str(value or "system").strip().lower()
+    if scope not in DNS_SCOPE_VALUES:
+        return "system"
+    return scope
+
+
+def _dns_config_for_scope(scope):
+    base = _dns_config()
+    scope_name = _normalize_dns_scope(scope)
+    if scope_name == "private":
+        private_ns = _split_csv_env(os.environ.get("DNS_PRIVATE_NAMESERVERS", ""))
+        if private_ns:
+            base["nameservers"] = private_ns
+    elif scope_name == "public":
+        public_ns = _split_csv_env(os.environ.get("DNS_PUBLIC_NAMESERVERS", ""))
+        if public_ns:
+            base["nameservers"] = public_ns
+    base["scope"] = scope_name
+    return base
+
+
 def _build_dns_resolver(cfg):
     resolver = dns.resolver.Resolver(configure=True)
     resolver.lifetime = cfg["lifetime"]
@@ -762,6 +831,43 @@ def _build_dns_resolver(cfg):
     if cfg["nameservers"]:
         resolver.nameservers = cfg["nameservers"]
     return resolver
+
+
+def _resolve_scan_ip(hostname, dns_scope):
+    host = str(hostname or "").strip()
+    if not host:
+        return ""
+    if _is_ip_address(host):
+        return host
+    if _normalize_dns_scope(dns_scope) == "system":
+        return ""
+
+    cfg = _dns_config_for_scope(dns_scope)
+    resolver = _build_dns_resolver(cfg)
+    attempts = cfg["attempts"]
+    a_records, _ = _resolve_records(host, "A", resolver, attempts)
+    if a_records:
+        return str(a_records[0])
+    aaaa_records, _ = _resolve_records(host, "AAAA", resolver, attempts)
+    if aaaa_records:
+        return str(aaaa_records[0])
+    return ""
+
+
+def _make_server_location(hostname, port, proxy_settings, resolved_ip=""):
+    kwargs = {
+        "hostname": hostname,
+        "port": port,
+        "http_proxy_settings": proxy_settings,
+    }
+    if resolved_ip:
+        try:
+            params = inspect.signature(ServerNetworkLocation).parameters
+            if "ip_address" in params:
+                kwargs["ip_address"] = resolved_ip
+        except Exception:
+            pass
+    return ServerNetworkLocation(**kwargs)
 
 
 def _classify_dns_error(exc):
@@ -946,9 +1052,9 @@ def _parse_dmarc_policy(record):
     return ""
 
 
-def _build_dns_payload(hostname):
+def _build_dns_payload(hostname, dns_scope="system"):
     host = str(hostname or "").strip()
-    dns_cfg = _dns_config()
+    dns_cfg = _dns_config_for_scope(dns_scope)
     resolver = _build_dns_resolver(dns_cfg)
     attempts = dns_cfg["attempts"]
     payload = {
@@ -965,6 +1071,7 @@ def _build_dns_payload(hostname):
         "dmarc": {"record": "", "policy": "", "domain": ""},
         "dns_meta": {
             "config": {
+                "scope": dns_cfg.get("scope", "system"),
                 "nameservers": dns_cfg["nameservers"],
                 "lifetime_seconds": dns_cfg["lifetime"],
                 "timeout_seconds": dns_cfg["timeout"],
@@ -994,9 +1101,26 @@ def _build_dns_payload(hostname):
         payload["aaaa"], payload["dns_meta"]["queries"]["aaaa"] = _resolve_records(
             host, "AAAA", resolver, attempts
         )
-        payload["resolved_ips"], payload["dns_meta"]["queries"]["resolved_ips"] = (
-            _resolve_host_ips(host)
-        )
+        if dns_cfg.get("scope") == "system":
+            payload["resolved_ips"], payload["dns_meta"]["queries"]["resolved_ips"] = (
+                _resolve_host_ips(host)
+            )
+        else:
+            merged = []
+            seen = set()
+            for ip in (payload["a"] or []) + (payload["aaaa"] or []):
+                value = str(ip)
+                if value in seen:
+                    continue
+                seen.add(value)
+                merged.append(value)
+            payload["resolved_ips"] = merged
+            payload["dns_meta"]["queries"]["resolved_ips"] = {
+                "ok": bool(merged),
+                "error_code": "" if merged else "NO_IP_RECORDS",
+                "error": "" if merged else "No A/AAAA records resolved",
+                "source": "resolver_records",
+            }
         payload["ns"], payload["dns_meta"]["queries"]["ns"] = _resolve_records(
             host, "NS", resolver, attempts
         )

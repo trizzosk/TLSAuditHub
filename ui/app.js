@@ -18,6 +18,7 @@ const ui = {
   targetForm: document.getElementById("targetForm"),
   hostname: document.getElementById("hostname"),
   port: document.getElementById("port"),
+  dnsScope: document.getElementById("dnsScope"),
   refreshTargetsBtn: document.getElementById("refreshTargetsBtn"),
   targetsBody: document.getElementById("targetsBody"),
   editTargetPanel: document.getElementById("editTargetPanel"),
@@ -25,6 +26,7 @@ const ui = {
   editTargetId: document.getElementById("editTargetId"),
   editTargetHostname: document.getElementById("editTargetHostname"),
   editTargetPort: document.getElementById("editTargetPort"),
+  editTargetDnsScope: document.getElementById("editTargetDnsScope"),
   editTargetStatus: document.getElementById("editTargetStatus"),
   cancelEditTargetBtn: document.getElementById("cancelEditTargetBtn"),
   dnsPanel: document.getElementById("dnsPanel"),
@@ -113,6 +115,8 @@ const ui = {
   userName: document.getElementById("userName"),
   userSurname: document.getElementById("userSurname"),
   userEmail: document.getElementById("userEmail"),
+  userRoleStandard: document.getElementById("userRoleStandard"),
+  userRoleAdmin: document.getElementById("userRoleAdmin"),
   usersBody: document.getElementById("usersBody"),
   editUserPanel: document.getElementById("editUserPanel"),
   editUserForm: document.getElementById("editUserForm"),
@@ -122,6 +126,7 @@ const ui = {
   editUserSurname: document.getElementById("editUserSurname"),
   editUserEmail: document.getElementById("editUserEmail"),
   editUserIsActive: document.getElementById("editUserIsActive"),
+  editUserIsAdmin: document.getElementById("editUserIsAdmin"),
   cancelEditUserBtn: document.getElementById("cancelEditUserBtn"),
   authConfigForm: document.getElementById("authConfigForm"),
   reloadAuthBtn: document.getElementById("reloadAuthBtn"),
@@ -161,6 +166,7 @@ const ui = {
 
 let accessToken = "";
 let currentUsername = "";
+let currentUserIsAdmin = false;
 let oidcEnabled = false;
 const jobIndex = new Map();
 const userIndex = new Map();
@@ -186,6 +192,10 @@ function baseUrl() {
   if (explicit) {
     return explicit.replace(/\/+$/, "");
   }
+  const runtimeConfigured = String(window.TLSAUDITHUB_API_BASE_URL || "").trim();
+  if (runtimeConfigured) {
+    return runtimeConfigured.replace(/\/+$/, "");
+  }
   const host = window.location.hostname || "localhost";
   const protocol = window.location.protocol || "http:";
   if (window.location.port === "5173" || host === "localhost" || host === "127.0.0.1") {
@@ -195,7 +205,7 @@ function baseUrl() {
 }
 
 function persistEventLog(message, level = "info", source = "ui") {
-  if (!accessToken) {
+  if (!accessToken || !currentUserIsAdmin) {
     return;
   }
   apiRequest("/admin/event-logs", {
@@ -235,6 +245,17 @@ function setAuthenticatedUI(authenticated) {
     item.disabled = !authenticated;
     item.setAttribute("aria-disabled", String(!authenticated));
   });
+}
+
+function applyAdminAccessUI() {
+  const adminMenuItem = Array.from(ui.menuItems || []).find(
+    (item) => item.dataset.view === "adminView"
+  );
+  if (!adminMenuItem) {
+    return;
+  }
+  const hideAdmin = !currentUserIsAdmin || !accessToken;
+  adminMenuItem.classList.toggle("hidden", hideAdmin);
 }
 
 function isMobileAdminLayout() {
@@ -309,13 +330,32 @@ function loadPersistedSession() {
 function setToken(token, username = "") {
   accessToken = token || "";
   currentUsername = accessToken ? username : "";
+  if (!accessToken) {
+    currentUserIsAdmin = false;
+  }
   persistSession(accessToken, currentUsername);
   setAuthState(
     Boolean(accessToken),
     accessToken ? `Welcome, ${currentUsername}` : "Not authenticated"
   );
   setAuthenticatedUI(Boolean(accessToken));
+  applyAdminAccessUI();
   activateView(accessToken ? "dashboardView" : "authView");
+}
+
+async function loadCurrentUserProfile() {
+  if (!accessToken) {
+    currentUserIsAdmin = false;
+    applyAdminAccessUI();
+    return;
+  }
+  try {
+    const data = await apiRequest("/auth/me", { method: "GET" });
+    currentUserIsAdmin = Boolean(data?.is_admin);
+  } catch (_error) {
+    currentUserIsAdmin = false;
+  }
+  applyAdminAccessUI();
 }
 
 async function apiRequest(path, options = {}) {
@@ -363,6 +403,7 @@ async function login(event) {
       body: formData,
     });
     setToken(data.access_token, username);
+    await loadCurrentUserProfile();
     ui.authPassword.value = "";
     log(`Login successful for ${username}.`);
     try {
@@ -485,6 +526,9 @@ function activateView(viewId) {
 
   if (!accessToken && viewId !== "authView") {
     viewId = "authView";
+  }
+  if (viewId === "adminView" && !currentUserIsAdmin) {
+    viewId = "dashboardView";
   }
 
   document.querySelectorAll(".view").forEach((view) => {
@@ -1116,7 +1160,7 @@ async function loadDashboard() {
 function renderTargets(targets) {
   if (!Array.isArray(targets) || targets.length === 0) {
     ui.targetsBody.innerHTML =
-      "<tr><td colspan='5' class='muted'>No targets found</td></tr>";
+      "<tr><td colspan='6' class='muted'>No targets found</td></tr>";
     return;
   }
 
@@ -1126,15 +1170,18 @@ function renderTargets(targets) {
         const targetId = escapeHtml(String(target.id || ""));
         const hostname = escapeHtml(String(target.hostname || "unknown host"));
         const hostnameRaw = escapeHtml(String(target.hostname || ""));
+        const dnsScopeRaw = String(target.dns_scope || "system").toLowerCase();
+        const dnsScope = escapeHtml(dnsScopeRaw);
         return `
       <tr>
         <td>${hostnameRaw}</td>
         <td>${target.port ?? ""}</td>
+        <td>${dnsScope}</td>
         <td>${target.enabled ? "Yes" : "No"}</td>
         <td>${target.scan_interval_minutes ?? "-"}</td>
         <td>
           <div class="target-actions">
-            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
+            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" data-dns-scope="${dnsScope}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
             <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="Run scan for ${hostname}">Run Scan</button>
             <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" class="dns-data-btn btn btn-sm btn-outline-secondary" aria-label="View DNS data for ${hostname}" title="View DNS data for ${hostname}">DNS Data</button>
             <button data-target-id="${targetId}" class="delete-target-btn btn btn-sm btn-outline-danger" aria-label="Delete target ${hostname}" title="Delete target ${hostname}">Delete</button>
@@ -1905,10 +1952,14 @@ function closeEditTargetPanel() {
   updateModalBodyLock();
 }
 
-function openEditTargetPanel(targetId, currentHostname, currentPort) {
+function openEditTargetPanel(targetId, currentHostname, currentPort, currentDnsScope) {
   ui.editTargetId.value = String(targetId || "");
   ui.editTargetHostname.value = String(currentHostname || "");
   ui.editTargetPort.value = String(currentPort || 443);
+  const normalizedScope = String(currentDnsScope || "system").toLowerCase();
+  ui.editTargetDnsScope.value = ["system", "private", "public"].includes(normalizedScope)
+    ? normalizedScope
+    : "system";
   setEditTargetStatus("");
   ui.editTargetPanel.classList.remove("hidden");
   ui.editTargetHostname.focus();
@@ -1936,18 +1987,23 @@ async function saveTargetEdit(event) {
     );
     return;
   }
+  const dnsScope = String(ui.editTargetDnsScope.value || "system").trim().toLowerCase();
+  if (!["system", "private", "public"].includes(dnsScope)) {
+    setEditTargetStatus("Edit target failed: invalid DNS scope.", "error");
+    return;
+  }
 
   setEditTargetStatus("Saving changes...", "");
   try {
     const data = await apiRequest(`/targets/${targetId}`, {
       method: "PUT",
-      body: JSON.stringify({ hostname, port }),
+      body: JSON.stringify({ hostname, port, dns_scope: dnsScope }),
     });
     const queueErrors = Array.isArray(data.queue_errors)
       ? data.queue_errors.filter(Boolean)
       : [];
     log(
-      `Target ${targetId} updated to ${hostname}:${port}. Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
+      `Target ${targetId} updated to ${hostname}:${port} (dns_scope=${dnsScope}). Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
     );
     if (queueErrors.length > 0) {
       log(`Target ${targetId} updated, but queue warnings: ${queueErrors.join(" | ")}`);
@@ -2398,7 +2454,7 @@ function renderUsers(users) {
   userIndex.clear();
   if (!Array.isArray(users) || users.length === 0) {
     ui.usersBody.innerHTML =
-      "<tr><td colspan='6' class='muted'>No users found</td></tr>";
+      "<tr><td colspan='7' class='muted'>No users found</td></tr>";
     return;
   }
 
@@ -2414,6 +2470,7 @@ function renderUsers(users) {
         <td>${escapeHtml(row.name || "")}</td>
         <td>${escapeHtml(row.surname || "")}</td>
         <td>${escapeHtml(row.email || "")}</td>
+        <td>${row.is_admin ? "Admin" : "User"}</td>
         <td>${row.is_active ? "Active" : "Disabled"}</td>
         <td class="users-actions">
           <button type="button" class="edit-user-btn btn btn-sm btn-outline-primary" data-user-id="${escapeHtml(
@@ -2451,6 +2508,12 @@ function openEditUserPanel(userId) {
   ui.editUserSurname.value = String(row.surname || "");
   ui.editUserEmail.value = String(row.email || "");
   ui.editUserIsActive.checked = Boolean(row.is_active);
+  ui.editUserIsAdmin.checked = Boolean(row.is_admin);
+  const isCurrentSessionUser = String(row.username || "") === String(currentUsername || "");
+  ui.editUserIsAdmin.disabled = isCurrentSessionUser;
+  ui.editUserIsAdmin.title = isCurrentSessionUser
+    ? "You cannot remove your own admin role from this screen."
+    : "";
   ui.editUserPanel.classList.remove("hidden");
 }
 
@@ -2549,7 +2612,7 @@ async function refreshUsers() {
     log(`Loaded ${Array.isArray(data) ? data.length : 0} users.`);
   } catch (error) {
     ui.usersBody.innerHTML =
-      "<tr><td colspan='5' class='muted'>Failed to load users</td></tr>";
+      "<tr><td colspan='7' class='muted'>Failed to load users</td></tr>";
     log(`User list load failed: ${error.message}`);
   }
 }
@@ -2563,10 +2626,28 @@ async function createUser(event) {
     surname: ui.userSurname.value.trim(),
     email: ui.userEmail.value.trim(),
     is_active: true,
+    is_admin: Boolean(ui.userRoleAdmin.checked),
   };
 
   if (!payload.username || !payload.password) {
     log("Create user failed: username and password are required.");
+    return;
+  }
+  if (payload.username.length < 3 || payload.username.length > 64) {
+    log("Create user failed: username must be 3-64 characters.");
+    return;
+  }
+  if (/\s/.test(payload.username)) {
+    log("Create user failed: username must not contain whitespace.");
+    return;
+  }
+  const password = payload.password;
+  if (password.length < 10) {
+    log("Create user failed: password must be at least 10 characters.");
+    return;
+  }
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    log("Create user failed: password must include upper, lower, and digit.");
     return;
   }
 
@@ -2577,6 +2658,7 @@ async function createUser(event) {
     });
     log(`User created: ${payload.username}`);
     ui.userForm.reset();
+    ui.userRoleStandard.checked = true;
     await refreshUsers();
   } catch (error) {
     log(`Create user failed: ${error.message}`);
@@ -2615,6 +2697,7 @@ async function saveUserEdit(event) {
     surname: ui.editUserSurname.value.trim(),
     email: ui.editUserEmail.value.trim(),
     is_active: Boolean(ui.editUserIsActive.checked),
+    is_admin: Boolean(ui.editUserIsAdmin.checked),
   };
 
   try {
@@ -2672,13 +2755,23 @@ async function addTarget(event) {
   event.preventDefault();
   const hostname = ui.hostname.value.trim();
   const port = Number(ui.port.value);
-  const query = new URLSearchParams({ hostname, port: String(port) });
+  const dnsScope = String(ui.dnsScope.value || "system").trim().toLowerCase();
+  if (!["system", "private", "public"].includes(dnsScope)) {
+    log("Add target failed: invalid DNS scope.");
+    return;
+  }
+  const query = new URLSearchParams({
+    hostname,
+    port: String(port),
+    dns_scope: dnsScope,
+  });
 
   try {
     await apiRequest(`/targets?${query.toString()}`, { method: "POST" });
-    log(`Target added: ${hostname}:${port}`);
+    log(`Target added: ${hostname}:${port} (dns_scope=${dnsScope})`);
     ui.targetForm.reset();
     ui.port.value = "443";
+    ui.dnsScope.value = "system";
     await refreshTargets();
     await loadDashboard();
   } catch (error) {
@@ -2695,11 +2788,13 @@ async function refreshAll() {
     ["targets", refreshTargets],
     ["spoofable", refreshSpoofable],
     ["jobs", refreshJobs],
-    ["users", refreshUsers],
-    ["proxy", loadProxyConfig],
-    ["scheduler", loadSchedulerConfig],
-    ["smtp", loadSmtpConfig],
   ];
+  if (currentUserIsAdmin) {
+    tasks.push(["users", refreshUsers]);
+    tasks.push(["proxy", loadProxyConfig]);
+    tasks.push(["scheduler", loadSchedulerConfig]);
+    tasks.push(["smtp", loadSmtpConfig]);
+  }
   const results = await Promise.allSettled(
     tasks.map(([, fn]) => fn())
   );
@@ -2918,7 +3013,8 @@ ui.targetsBody.addEventListener("click", (event) => {
     openEditTargetPanel(
       editBtn.dataset.targetId,
       editBtn.dataset.hostname,
-      editBtn.dataset.port
+      editBtn.dataset.port,
+      editBtn.dataset.dnsScope
     );
     return;
   }
@@ -2990,7 +3086,7 @@ if (ui.adminShell && isMobileAdminLayout()) {
 updateAdminNavToggleState();
 updateModalBodyLock();
 if (accessToken) {
-  refreshAll();
+  loadCurrentUserProfile().then(() => refreshAll());
 }
 loadAuthMethod();
 setInterval(() => {

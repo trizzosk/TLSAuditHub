@@ -27,7 +27,10 @@ from io import StringIO
 from email.message import EmailMessage
 
 app = FastAPI(title="SSLyze Scanner API")
-celery_client = Celery("api", broker="redis://redis:6379/0")
+celery_client = Celery(
+    "api",
+    broker=os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0"),
+)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -45,6 +48,7 @@ EVENT_LOG_DEFAULT_LIMIT = 15
 EVENT_LOG_RETENTION_DAYS = 90
 OIDC_STATE_TTL_SECONDS = 300
 AUTH_METHODS = ("local", "oidc", "ldap")
+DNS_SCOPE_VALUES = ("system", "private", "public")
 DEFAULT_AUTH_METHOD = "local"
 
 OIDC_ISSUER_URL_DEFAULT = (os.environ.get("OIDC_ISSUER_URL") or "").strip()
@@ -107,6 +111,7 @@ class UserCreate(BaseModel):
     surname: str = ""
     email: str = ""
     is_active: bool = True
+    is_admin: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -114,6 +119,7 @@ class UserUpdate(BaseModel):
     surname: str = ""
     email: str = ""
     is_active: bool = True
+    is_admin: bool = False
 
 
 class EventLogCreate(BaseModel):
@@ -146,6 +152,7 @@ class ReportEmailRequest(BaseModel):
 class TargetUpdate(BaseModel):
     hostname: str
     port: int = 443
+    dns_scope: str = "system"
 
 
 class AuthConfigUpdate(BaseModel):
@@ -585,6 +592,57 @@ def ensure_target_dns_table(db):
     db.commit()
 
 
+def ensure_targets_dns_scope_column(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS dns_scope TEXT NOT NULL DEFAULT 'system'
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET dns_scope='system'
+            WHERE dns_scope IS NULL OR trim(dns_scope) = ''
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            DROP CONSTRAINT IF EXISTS targets_dns_scope_check
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD CONSTRAINT targets_dns_scope_check
+            CHECK (dns_scope IN ('system', 'private', 'public'))
+            """
+        )
+    )
+    db.commit()
+
+
+def _normalize_dns_scope(value: str) -> str:
+    scope = str(value or "system").strip().lower()
+    if scope not in DNS_SCOPE_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "invalid dns_scope; expected one of: "
+                + ", ".join(DNS_SCOPE_VALUES)
+            ),
+        )
+    return scope
+
+
 def ensure_scans_error_message_column(db):
     db.execute(
         text(
@@ -605,11 +663,15 @@ def _is_ip_address(value: str) -> bool:
         return False
 
 
-def _validate_hostname_resolves(hostname: str, port: int):
+def _validate_hostname_resolves(hostname: str, port: int, dns_scope: str = "system"):
     host = str(hostname or "").strip()
     if not host:
         raise HTTPException(status_code=400, detail="hostname is required")
     if _is_ip_address(host):
+        return
+    if str(dns_scope or "system").strip().lower() != "system":
+        # Private/public resolver validation is handled in the worker path,
+        # where resolver profiles are applied consistently for scan + DNS tasks.
         return
     try:
         socket.getaddrinfo(
@@ -655,15 +717,6 @@ def ensure_event_logs_table(db):
             """
             CREATE INDEX IF NOT EXISTS idx_event_logs_level_created_at
             ON event_logs (level, created_at DESC)
-            """
-        )
-    )
-    db.execute(
-        text(
-            """
-            UPDATE event_logs
-            SET level = 'info'
-            WHERE lower(trim(level)) NOT IN ('debug', 'info', 'warn', 'error')
             """
         )
     )
@@ -1241,6 +1294,7 @@ def init_proxy_config():
         ensure_smtp_config_table(db)
         ensure_auth_config_table(db)
         ensure_target_dns_table(db)
+        ensure_targets_dns_scope_column(db)
         ensure_scans_error_message_column(db)
         ensure_users_table(db)
         ensure_event_logs_table(db)
@@ -1288,6 +1342,15 @@ def auth_method():
         "password_login_enabled": active_method in {"local", "ldap"},
         "oidc_enabled": oidc_ready,
         "ldap_enabled": ldap_ready,
+    }
+
+
+@app.get("/auth/me")
+def auth_me(user=Depends(get_current_user)):
+    return {
+        "username": str(user.get("username") or ""),
+        "is_admin": bool(user.get("is_admin")),
+        "is_active": bool(user.get("is_active")),
     }
 
 
@@ -1422,15 +1485,26 @@ def oidc_callback(
 
 
 @app.post("/targets")
-def add_target(hostname: str, port: int = 443, user=Depends(get_current_user)):
-    _validate_hostname_resolves(hostname, port)
+def add_target(
+    hostname: str,
+    port: int = 443,
+    dns_scope: str = "system",
+    user=Depends(get_current_user),
+):
+    normalized_dns_scope = _normalize_dns_scope(dns_scope)
+    _validate_hostname_resolves(hostname, port, normalized_dns_scope)
     db = SessionLocal()
     try:
+        ensure_targets_dns_scope_column(db)
         row = db.execute(
             text(
-                "INSERT INTO targets (hostname, port) VALUES (:h, :p) RETURNING id"
+                """
+                INSERT INTO targets (hostname, port, dns_scope)
+                VALUES (:h, :p, :dns_scope)
+                RETURNING id
+                """
             ),
-            {"h": hostname, "p": port},
+            {"h": hostname, "p": port, "dns_scope": normalized_dns_scope},
         ).fetchone()
         db.commit()
         target_id = row._mapping["id"] if row else None
@@ -1450,6 +1524,7 @@ def list_targets(
 ):
     db = SessionLocal()
     try:
+        ensure_targets_dns_scope_column(db)
         total_row = db.execute(
             text("SELECT COUNT(*) AS total FROM targets")
         ).fetchone()
@@ -1465,7 +1540,7 @@ def list_targets(
         rows = db.execute(
             text(
                 f"""
-                SELECT id, hostname, port, enabled, scan_interval_minutes
+                SELECT id, hostname, port, enabled, scan_interval_minutes, dns_scope
                 FROM targets
                 ORDER BY hostname ASC, port ASC
                 {limit_clause}
@@ -1517,6 +1592,7 @@ def update_target(
     target_id: UUID, payload: TargetUpdate, user=Depends(get_current_user)
 ):
     hostname = (payload.hostname or "").strip()
+    dns_scope = _normalize_dns_scope(payload.dns_scope)
     if not hostname:
         raise HTTPException(status_code=400, detail="hostname is required")
 
@@ -1525,10 +1601,11 @@ def update_target(
         raise HTTPException(
             status_code=400, detail="port must be in range 1-65535"
         )
-    _validate_hostname_resolves(hostname, port)
+    _validate_hostname_resolves(hostname, port, dns_scope)
 
     db = SessionLocal()
     try:
+        ensure_targets_dns_scope_column(db)
         target = db.execute(
             text("SELECT id FROM targets WHERE id=:tid"),
             {"tid": target_id},
@@ -1540,11 +1617,16 @@ def update_target(
             text(
                 """
                 UPDATE targets
-                SET hostname=:hostname, port=:port
+                SET hostname=:hostname, port=:port, dns_scope=:dns_scope
                 WHERE id=:tid
                 """
             ),
-            {"hostname": hostname, "port": port, "tid": target_id},
+            {
+                "hostname": hostname,
+                "port": port,
+                "dns_scope": dns_scope,
+                "tid": target_id,
+            },
         )
         # Purge cached DNS so next lookup always reflects the edited host.
         db.execute(
@@ -1578,6 +1660,7 @@ def update_target(
             "target_id": str(target_id),
             "hostname": hostname,
             "port": port,
+            "dns_scope": dns_scope,
             "dns_task_id": dns_task_id,
             "scan_task_id": scan_task_id,
             "queue_errors": queue_errors,
@@ -1742,7 +1825,7 @@ def list_users(user=Depends(get_current_admin)):
         rows = db.execute(
             text(
                 """
-                SELECT id, username, name, surname, email, is_active
+                SELECT id, username, name, surname, email, is_active, is_admin
                 FROM users
                 ORDER BY username ASC
                 """
@@ -1762,7 +1845,6 @@ def list_event_logs(
 ):
     db = SessionLocal()
     try:
-        ensure_event_logs_table(db)
         prune_event_logs_retention(db)
         safe_limit = max(1, min(int(limit or EVENT_LOG_DEFAULT_LIMIT), 500))
         safe_offset = max(0, int(offset or 0))
@@ -1835,8 +1917,6 @@ def create_event_log(payload: EventLogCreate, user=Depends(get_current_admin)):
 
     db = SessionLocal()
     try:
-        ensure_event_logs_table(db)
-        prune_event_logs_retention(db)
         db.execute(
             text(
                 """
@@ -1875,14 +1955,15 @@ def create_user(payload: UserCreate, user=Depends(get_current_admin)):
             text(
                 """
                 INSERT INTO users
-                (username, password_hash, is_active, name, surname, email)
-                VALUES (:u, :p, :a, :n, :s, :e)
+                (username, password_hash, is_active, is_admin, name, surname, email)
+                VALUES (:u, :p, :a, :admin, :n, :s, :e)
                 """
             ),
             {
                 "u": username,
                 "p": hash_password(payload.password),
                 "a": bool(payload.is_active),
+                "admin": bool(payload.is_admin),
                 "n": payload.name.strip(),
                 "s": payload.surname.strip(),
                 "e": payload.email.strip(),
@@ -1902,11 +1983,23 @@ def update_user(
     try:
         ensure_users_table(db)
         row = db.execute(
-            text("SELECT id, username FROM users WHERE id=:id"),
+            text("SELECT id, username, is_admin FROM users WHERE id=:id"),
             {"id": user_id},
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="User not found")
+        target_username = str(row._mapping.get("username") or "")
+        target_is_admin = bool(row._mapping.get("is_admin"))
+        requested_is_admin = bool(payload.is_admin)
+        if (
+            target_username == str(user.get("username") or "")
+            and target_is_admin
+            and not requested_is_admin
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot remove your own admin role",
+            )
 
         db.execute(
             text(
@@ -1915,7 +2008,8 @@ def update_user(
                 SET name=:n,
                     surname=:s,
                     email=:e,
-                    is_active=:a
+                    is_active=:a,
+                    is_admin=:admin
                 WHERE id=:id
                 """
             ),
@@ -1925,6 +2019,7 @@ def update_user(
                 "s": payload.surname.strip(),
                 "e": payload.email.strip(),
                 "a": bool(payload.is_active),
+                "admin": requested_is_admin,
             },
         )
         db.commit()

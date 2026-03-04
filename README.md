@@ -49,6 +49,8 @@ If your organization uses uppercase-only or lowercase-only variables, keep both 
 If your environment uses internal DNS with forwarding to external resolvers, you can tune DNS lookup behavior for the worker:
 
 - `DNS_NAMESERVERS` comma-separated resolvers to force (example: `10.10.1.53,10.10.1.54`)
+- `DNS_PRIVATE_NAMESERVERS` resolvers used when target `dns_scope=private`
+- `DNS_PUBLIC_NAMESERVERS` resolvers used when target `dns_scope=public`
 - `DNS_LIFETIME_SECONDS` total resolver lifetime per query (default `8`)
 - `DNS_TIMEOUT_SECONDS` per-attempt timeout (default `3`)
 - `DNS_ATTEMPTS` max attempts per record query (default `2`)
@@ -60,12 +62,33 @@ Example `.env`:
 
 ```env
 DNS_NAMESERVERS=10.10.1.53,10.10.1.54
+DNS_PRIVATE_NAMESERVERS=10.10.1.53,10.10.1.54
+DNS_PUBLIC_NAMESERVERS=1.1.1.1,8.8.8.8
 DNS_LIFETIME_SECONDS=10
 DNS_TIMEOUT_SECONDS=4
 DNS_ATTEMPTS=3
 DNS_USE_SEARCH=true
 WHOIS_SKIP_SUFFIXES=.internal,.local,.corp,.lan,.home,localhost
 ```
+
+### Split-brain DNS support (per target)
+Targets support `dns_scope` with values:
+
+- `system` (default): use host/system resolver behavior.
+- `private`: use `DNS_PRIVATE_NAMESERVERS` (or fallback to `DNS_NAMESERVERS`).
+- `public`: use `DNS_PUBLIC_NAMESERVERS` (or fallback to `DNS_NAMESERVERS`).
+
+You can set this when adding/editing targets in UI. DNS scope is used for DNS lookup jobs and scan address resolution.
+
+Resolver selection order:
+- Target `dns_scope=private`: `DNS_PRIVATE_NAMESERVERS` -> `DNS_NAMESERVERS` -> system resolver.
+- Target `dns_scope=public`: `DNS_PUBLIC_NAMESERVERS` -> `DNS_NAMESERVERS` -> system resolver.
+- Target `dns_scope=system`: system resolver only.
+
+Practical setup example:
+- Set `DNS_PRIVATE_NAMESERVERS` to your internal DNS (for split-horizon internal answers).
+- Set `DNS_PUBLIC_NAMESERVERS` to public resolvers (for internet-facing answers).
+- Choose scope per target in **Hosts / Targets** UI.
 
 ### Authentication providers (Local / OIDC / LDAP)
 Authentication is configured in **Admin -> Authentication**.
@@ -225,6 +248,68 @@ Change this password immediately after first login.
    - `cd ui`
    - `python3 -m http.server 5173`
 3. Open `http://localhost:5173`
+
+## OpenShift Deployment
+This repo includes OpenShift assets under `deploy/openshift/`:
+
+- `template.yaml`: app stack (`api`, `ui`, `worker`, `scheduler`) with Routes/Services/Secrets/ConfigMaps.
+- `db-init-job.yaml`: one-time schema bootstrap job using `db/init.sql`.
+- Dockerfiles for image builds:
+  - `docker/api.Dockerfile`
+  - `docker/worker.Dockerfile`
+  - `docker/ui.Dockerfile`
+
+### 1) Build and push images
+Example with Podman:
+
+```bash
+podman build -f docker/api.Dockerfile -t <registry>/tlsaudithub-api:<tag> .
+podman build -f docker/worker.Dockerfile -t <registry>/tlsaudithub-worker:<tag> .
+podman build -f docker/ui.Dockerfile -t <registry>/tlsaudithub-ui:<tag> .
+podman push <registry>/tlsaudithub-api:<tag>
+podman push <registry>/tlsaudithub-worker:<tag>
+podman push <registry>/tlsaudithub-ui:<tag>
+```
+
+### 2) Provision PostgreSQL and Redis in OpenShift
+Use your preferred operator-managed services and expose them as DNS names reachable from the namespace.
+
+Expected defaults in the template:
+- PostgreSQL DSN: `postgresql://sslyze:sslyze@postgresql:5432/sslyze`
+- Redis URL: `redis://redis:6379/0`
+
+### 3) Deploy the app stack
+Set `API_BASE_URL` to your public API Route URL (used by UI runtime config).
+
+```bash
+oc process -f deploy/openshift/template.yaml \
+  -p API_IMAGE=<registry>/tlsaudithub-api:<tag> \
+  -p WORKER_IMAGE=<registry>/tlsaudithub-worker:<tag> \
+  -p UI_IMAGE=<registry>/tlsaudithub-ui:<tag> \
+  -p API_BASE_URL=https://tlsaudithub-api-<project>.<apps-domain> \
+  -p DNS_PRIVATE_NAMESERVERS=10.10.1.53,10.10.1.54 \
+  -p DNS_PUBLIC_NAMESERVERS=1.1.1.1,8.8.8.8 \
+  -p CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://[::1]:5173,https://tlsaudithub-ui-<project>.<apps-domain> \
+  | oc apply -f -
+```
+
+### 4) Initialize database schema (first deployment only)
+Create a ConfigMap from `db/init.sql`, then run the init Job:
+
+```bash
+oc create configmap tlsaudithub-db-init-sql --from-file=init.sql=db/init.sql
+oc apply -f deploy/openshift/db-init-job.yaml
+oc logs -f job/tlsaudithub-db-init
+```
+
+### 5) Access the app
+Get the UI and API Routes:
+
+```bash
+oc get route tlsaudithub-ui tlsaudithub-api
+```
+
+Open the UI Route URL and log in.
 
 ## Notes
 - The web UI is in `ui/`.

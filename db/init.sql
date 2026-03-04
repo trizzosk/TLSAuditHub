@@ -4,6 +4,8 @@ CREATE TABLE targets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     hostname TEXT NOT NULL,
     port INT NOT NULL DEFAULT 443,
+    dns_scope TEXT NOT NULL DEFAULT 'system'
+        CHECK (dns_scope IN ('system', 'private', 'public')),
     enabled BOOLEAN DEFAULT TRUE,
     scan_interval_minutes INT DEFAULT 1440
 );

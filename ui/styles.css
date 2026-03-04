@@ -260,6 +260,30 @@ body.modal-open {
   gap: 8px;
 }
 
+.role-choice-card {
+  border: 2px solid #d8b65a;
+  background: linear-gradient(180deg, #fff8e1, #fffdf5);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.role-choice-card .h6 {
+  margin: 0;
+  color: #6a4b00;
+  font-weight: 700;
+}
+
+.role-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.role-option:last-of-type {
+  margin-bottom: 8px;
+}
+
 .form-hint {
   margin: 0;
   color: var(--app-muted);
