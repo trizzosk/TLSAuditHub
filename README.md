@@ -20,6 +20,7 @@ The core TLS scanning engine in this project is [`sslyze`](https://github.com/na
 - Results view for job output details.
 - Spoofable report view to highlight domains with weak SPF/DMARC posture.
 - DNS data collection per target (WHOIS, NS, MX, SPF, DMARC) used by reports.
+- DKIM discovery in DNS data with selector management in **Admin -> DKIM**.
 - Built-in report findings for TLS 1.3 gaps, legacy SSL, SPF/DMARC posture,
   HTTPS posture issues, and cipher hygiene risk scoring.
 - Admin proxy configuration for outbound scan traffic.
@@ -63,6 +64,9 @@ If your environment uses internal DNS with forwarding to external resolvers, you
 - `DKIM_EXTRA_SELECTORS` additional selectors appended after `DKIM_SELECTORS`
 - `DKIM_INCLUDE_DEFAULT_SELECTORS` include built-in fallback selector list (`true`/`false`, default `true`)
 - `DKIM_MAX_QUERIES` hard limit for DKIM TXT queries per host (default `48`)
+- `DKIM_MAX_PARALLEL` max concurrent DKIM TXT checks per batch (default `8`)
+- `DKIM_EARLY_STOP_RECORDS` stop further selector probing per candidate domain after N records (default `3`)
+- `DKIM_FULL_SCAN` disable early-stop and probe until query budget is exhausted (`true`/`false`, default `false`)
 
 Example `.env`:
 
@@ -79,6 +83,9 @@ DKIM_SELECTORS=selector1,selector2,s1,s2
 DKIM_EXTRA_SELECTORS=default,mail,mx
 DKIM_INCLUDE_DEFAULT_SELECTORS=true
 DKIM_MAX_QUERIES=48
+DKIM_MAX_PARALLEL=8
+DKIM_EARLY_STOP_RECORDS=3
+DKIM_FULL_SCAN=false
 ```
 
 ### DKIM discovery model (no external selector API dependency)
@@ -90,6 +97,13 @@ DKIM selector lookup does not rely on public selector APIs. Instead, worker DNS 
 - performs bounded brute-force TXT lookups on `<selector>._domainkey.<candidate-domain>`.
 
 This approach works better in mixed/regional environments (including `cz`, `sk`, `eu`, `hu`) where public selector APIs are incomplete.
+
+### DKIM selector management in Admin UI
+You can manage DKIM selectors in **Admin -> DKIM** using a multiline textarea (one selector per line).
+
+- Saved selectors are stored in database config (`dkim_config`) and used by worker DNS lookups.
+- `DKIM_SELECTORS` is used as initial/default fallback only.
+- `DKIM_EXTRA_SELECTORS`, `DKIM_INCLUDE_DEFAULT_SELECTORS`, and `DKIM_MAX_QUERIES` remain environment-based tuning.
 
 ### Split-brain DNS support (per target)
 Targets support `dns_scope` with values:

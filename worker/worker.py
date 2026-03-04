@@ -18,6 +18,7 @@ import json
 import re
 import ssl
 import inspect
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fnmatch import fnmatchcase
 from diff import diff_sets, diff_dict
 from normalize import normalize_scan
@@ -413,7 +414,8 @@ def run_dns_lookup(target_id: str):
             return
         hostname = row._mapping["hostname"]
         dns_scope = _normalize_dns_scope(row._mapping.get("dns_scope"))
-        payload = _build_dns_payload(hostname, dns_scope)
+        dkim_cfg = _get_dkim_config(db)
+        payload = _build_dns_payload(hostname, dns_scope, dkim_cfg)
         db.execute(
             text(
                 """
@@ -689,6 +691,47 @@ def _get_proxy_config(db):
         "username": (data["username"] or "").strip(),
         "password": data["password"] or "",
         "no_proxy_patterns": data["no_proxy_patterns"] or "",
+    }
+
+
+def _get_dkim_config(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS dkim_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                selectors_text TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT dkim_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO dkim_config (id, selectors_text)
+            VALUES (1, :selectors_text)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {"selectors_text": os.environ.get("DKIM_SELECTORS", "")},
+    )
+    db.commit()
+
+    row = db.execute(
+        text(
+            """
+            SELECT selectors_text, updated_at
+            FROM dkim_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    data = dict(row._mapping) if row else {}
+    return {
+        "selectors_text": str(data.get("selectors_text") or ""),
+        "updated_at": data.get("updated_at"),
     }
 
 
@@ -1113,8 +1156,16 @@ def _sanitize_selector(value):
     return selector
 
 
-def _dkim_selector_candidates():
-    configured = [_sanitize_selector(v) for v in _split_csv_env(os.environ.get("DKIM_SELECTORS", ""))]
+def _dkim_selector_candidates(dkim_cfg=None):
+    raw_selectors = ""
+    if isinstance(dkim_cfg, dict):
+        raw_selectors = str(dkim_cfg.get("selectors_text") or "")
+    if not raw_selectors:
+        raw_selectors = os.environ.get("DKIM_SELECTORS", "")
+    configured = [
+        _sanitize_selector(v)
+        for v in re.split(r"[\r\n,;]+", str(raw_selectors or ""))
+    ]
     extra = [_sanitize_selector(v) for v in _split_csv_env(os.environ.get("DKIM_EXTRA_SELECTORS", ""))]
     include_defaults = _env_bool("DKIM_INCLUDE_DEFAULT_SELECTORS", True)
 
@@ -1172,59 +1223,141 @@ def _dkim_key_size_hint_bits(public_key_b64):
     return int(len(key) * 6)
 
 
-def _query_dkim_records(hostname, mx_records, resolver, attempts):
+def _query_single_dkim_selector(idx, selector, domain, dns_cfg, attempts):
+    fqdn = f"{selector}._domainkey.{domain}"
+    resolver = _build_dns_resolver(dns_cfg)
+    txt_records, meta = _resolve_records(fqdn, "TXT", resolver, attempts)
+    dkim_record = _extract_dkim_record(txt_records)
+    found = bool(dkim_record)
+    return {
+        "idx": idx,
+        "selector": selector,
+        "domain": domain,
+        "fqdn": fqdn,
+        "meta": meta,
+        "dkim_record": dkim_record,
+        "found": found,
+    }
+
+
+def _query_dkim_records(hostname, mx_records, resolver, attempts, dkim_cfg=None):
     domains = _dkim_candidate_domains(hostname, mx_records)
-    selectors = _dkim_selector_candidates()
+    selectors = _dkim_selector_candidates(dkim_cfg)
     max_queries = _env_int("DKIM_MAX_QUERIES", 48, minimum=1)
+    max_parallel = min(32, _env_int("DKIM_MAX_PARALLEL", 8, minimum=1))
+    early_stop_records = _env_int("DKIM_EARLY_STOP_RECORDS", 3, minimum=1)
+    full_scan = _env_bool("DKIM_FULL_SCAN", False)
     query_meta = []
     records = []
     query_count = 0
     found_count = 0
+    dns_cfg = {
+        "nameservers": list(getattr(resolver, "nameservers", []) or []),
+        "lifetime": float(getattr(resolver, "lifetime", 8)),
+        "timeout": float(getattr(resolver, "timeout", 3)),
+        "use_search": bool(getattr(resolver, "use_search_by_default", True)),
+    }
 
-    for domain in domains:
-        for selector in selectors:
-            if query_count >= max_queries:
-                break
-            query_count += 1
-            fqdn = f"{selector}._domainkey.{domain}"
-            txt_records, meta = _resolve_records(fqdn, "TXT", resolver, attempts)
-            dkim_record = _extract_dkim_record(txt_records)
-            found = bool(dkim_record)
-            if found:
-                found_count += 1
-                tags = _parse_tag_pairs(dkim_record)
-                key_type = str(tags.get("k") or "rsa").lower()
-                key_hint_bits = _dkim_key_size_hint_bits(tags.get("p") or "")
-                weak_key_hint = bool(
-                    key_type == "rsa" and key_hint_bits and key_hint_bits < 2048
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        for domain in domains:
+            domain_found = 0
+            selector_index = 0
+
+            while selector_index < len(selectors) and query_count < max_queries:
+                if not full_scan and domain_found >= early_stop_records:
+                    break
+
+                remaining_queries = max_queries - query_count
+                batch_size = min(
+                    max_parallel,
+                    remaining_queries,
+                    len(selectors) - selector_index,
                 )
-                records.append(
-                    {
-                        "selector": selector,
-                        "domain": domain,
-                        "fqdn": fqdn,
-                        "record": dkim_record,
-                        "key_type": key_type,
-                        "service": tags.get("s") or "",
-                        "flags": tags.get("t") or "",
-                        "public_key_present": bool(tags.get("p")),
-                        "public_key_size_hint_bits": key_hint_bits,
-                        "weak_key_hint": weak_key_hint,
-                    }
-                )
-            if found or len(query_meta) < 24:
-                query_meta.append(
-                    {
-                        "selector": selector,
-                        "domain": domain,
-                        "fqdn": fqdn,
-                        "ok": bool(meta.get("ok")),
-                        "error_code": str(meta.get("error_code") or ""),
-                        "found_record": found,
-                    }
-                )
-        if query_count >= max_queries:
-            break
+                if batch_size <= 0:
+                    break
+
+                batch = selectors[selector_index : selector_index + batch_size]
+                start_index = selector_index
+                selector_index += batch_size
+
+                futures = []
+                for i, selector in enumerate(batch):
+                    futures.append(
+                        pool.submit(
+                            _query_single_dkim_selector,
+                            start_index + i,
+                            selector,
+                            domain,
+                            dns_cfg,
+                            attempts,
+                        )
+                    )
+
+                batch_results = []
+                for future in as_completed(futures):
+                    try:
+                        batch_results.append(future.result())
+                    except Exception as exc:
+                        batch_results.append(
+                            {
+                                "idx": -1,
+                                "selector": "",
+                                "domain": domain,
+                                "fqdn": "",
+                                "meta": {
+                                    "ok": False,
+                                    "error_code": exc.__class__.__name__.upper(),
+                                },
+                                "dkim_record": "",
+                                "found": False,
+                            }
+                        )
+
+                batch_results.sort(key=lambda item: int(item.get("idx", -1)))
+
+                for result in batch_results:
+                    query_count += 1
+                    selector = result.get("selector") or ""
+                    fqdn = result.get("fqdn") or ""
+                    meta = result.get("meta") or {}
+                    dkim_record = result.get("dkim_record") or ""
+                    found = bool(result.get("found"))
+                    if found:
+                        domain_found += 1
+                        found_count += 1
+                        tags = _parse_tag_pairs(dkim_record)
+                        key_type = str(tags.get("k") or "rsa").lower()
+                        key_hint_bits = _dkim_key_size_hint_bits(tags.get("p") or "")
+                        weak_key_hint = bool(
+                            key_type == "rsa"
+                            and key_hint_bits
+                            and key_hint_bits < 2048
+                        )
+                        records.append(
+                            {
+                                "selector": selector,
+                                "domain": domain,
+                                "fqdn": fqdn,
+                                "record": dkim_record,
+                                "key_type": key_type,
+                                "service": tags.get("s") or "",
+                                "flags": tags.get("t") or "",
+                                "public_key_present": bool(tags.get("p")),
+                                "public_key_size_hint_bits": key_hint_bits,
+                                "weak_key_hint": weak_key_hint,
+                            }
+                        )
+                    if found or len(query_meta) < 24:
+                        query_meta.append(
+                            {
+                                "selector": selector,
+                                "domain": domain,
+                                "fqdn": fqdn,
+                                "ok": bool(meta.get("ok")),
+                                "error_code": str(meta.get("error_code") or ""),
+                                "found_record": found,
+                            }
+                        )
 
     return {
         "domains": domains,
@@ -1238,12 +1371,15 @@ def _query_dkim_records(hostname, mx_records, resolver, attempts):
             "selector_count": len(selectors),
             "domain_count": len(domains),
             "max_queries": max_queries,
+            "max_parallel": max_parallel,
+            "early_stop_records": early_stop_records,
+            "full_scan": full_scan,
             "truncated": bool(query_count >= max_queries),
         },
     }
 
 
-def _build_dns_payload(hostname, dns_scope="system"):
+def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
     host = str(hostname or "").strip()
     dns_cfg = _dns_config_for_scope(dns_scope)
     resolver = _build_dns_resolver(dns_cfg)
@@ -1271,6 +1407,11 @@ def _build_dns_payload(hostname, dns_scope="system"):
                 "selector_count": 0,
                 "domain_count": 0,
                 "max_queries": _env_int("DKIM_MAX_QUERIES", 48, minimum=1),
+                "max_parallel": _env_int("DKIM_MAX_PARALLEL", 8, minimum=1),
+                "early_stop_records": _env_int(
+                    "DKIM_EARLY_STOP_RECORDS", 3, minimum=1
+                ),
+                "full_scan": _env_bool("DKIM_FULL_SCAN", False),
                 "truncated": False,
             },
         },
@@ -1347,7 +1488,9 @@ def _build_dns_payload(hostname, dns_scope="system"):
             "policy": _parse_dmarc_policy(dmarc_record),
             "domain": dmarc_domain,
         }
-        dkim = _query_dkim_records(host, payload["mx"], resolver, attempts)
+        dkim = _query_dkim_records(
+            host, payload["mx"], resolver, attempts, dkim_cfg=dkim_cfg
+        )
         payload["dkim"] = {
             "domains": dkim["domains"],
             "selectors": dkim["selectors"],

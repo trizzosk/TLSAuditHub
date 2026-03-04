@@ -378,6 +378,7 @@
               <button class="admin-nav-item btn" type="button" data-admin-page="adminProxyPage">Proxy</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSmtpPage">SMTP</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminDkimPage">DKIM</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminImportPage">Bulk Import</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminPurgePage">Data Purge</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminLogPage">Event Log</button>
@@ -766,6 +767,25 @@
                     </div>
 
                     <button type="submit" id="saveSmtpBtn" class="btn btn-primary mt-2">Save SMTP Config</button>
+                  </form>
+                </div>
+              </section>
+            </section>
+
+            <section id="adminDkimPage" class="admin-page">
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">DKIM Selectors</h3>
+                    <button id="reloadDkimBtn" class="btn btn-outline-primary btn-sm" type="button">Reload DKIM Config</button>
+                  </div>
+                  <form id="dkimForm" class="proxy-form mt-3">
+                    <div class="form-field">
+                      <label for="dkimSelectors" class="form-label">Selectors (one per line)</label>
+                      <textarea id="dkimSelectors" class="form-control" rows="14" placeholder="selector1&#10;selector2&#10;s1&#10;s2"></textarea>
+                      <p class="form-hint">Used for DKIM TXT lookup as <span class="tiny-mono">&lt;selector&gt;._domainkey.&lt;candidate-domain&gt;</span>. Invalid lines are ignored.</p>
+                    </div>
+                    <button type="submit" id="saveDkimBtn" class="btn btn-primary mt-2">Save DKIM Config</button>
                   </form>
                 </div>
               </section>

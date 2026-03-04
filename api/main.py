@@ -17,6 +17,7 @@ import socket
 import ssl
 import smtplib
 import time
+import re
 import urllib.parse
 import urllib.request
 import hashlib
@@ -142,6 +143,10 @@ class SmtpConfigUpdate(BaseModel):
     reply_to: str = ""
     subject_template: str = "{finding_name}"
     timeout_seconds: int = 15
+
+
+class DkimConfigUpdate(BaseModel):
+    selectors_text: str = ""
 
 
 class ReportEmailRequest(BaseModel):
@@ -504,6 +509,74 @@ def ensure_auth_config_table(db):
         },
     )
     db.commit()
+
+
+def _normalize_dkim_selector_text(value: str) -> list[str]:
+    selectors = []
+    seen = set()
+    for part in re.split(r"[\r\n,;]+", str(value or "")):
+        selector = str(part or "").strip().lower()
+        if not selector:
+            continue
+        if not re.match(r"^[a-z0-9][a-z0-9._-]{0,62}$", selector):
+            continue
+        if selector in seen:
+            continue
+        seen.add(selector)
+        selectors.append(selector)
+    return selectors
+
+
+def ensure_dkim_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS dkim_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                selectors_text TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT dkim_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO dkim_config (id, selectors_text)
+            VALUES (1, :selectors_text)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {
+            "selectors_text": "\n".join(
+                _normalize_dkim_selector_text(os.environ.get("DKIM_SELECTORS", ""))
+            )
+        },
+    )
+    db.commit()
+
+
+def read_dkim_config(db):
+    ensure_dkim_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT selectors_text, updated_at
+            FROM dkim_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="dkim config unavailable")
+    selectors = _normalize_dkim_selector_text(row._mapping.get("selectors_text") or "")
+    return {
+        "selectors_text": "\n".join(selectors),
+        "selectors": selectors,
+        "selector_count": len(selectors),
+        "updated_at": row._mapping.get("updated_at"),
+    }
 
 
 def read_auth_config(db) -> dict:
@@ -1313,6 +1386,7 @@ def init_proxy_config():
         ensure_proxy_config_table(db)
         ensure_scheduler_config_table(db)
         ensure_smtp_config_table(db)
+        ensure_dkim_config_table(db)
         ensure_auth_config_table(db)
         ensure_target_dns_table(db)
         ensure_targets_dns_scope_column(db)
@@ -2573,6 +2647,40 @@ def update_smtp_config(payload: SmtpConfigUpdate, user=Depends(get_current_admin
         )
         db.commit()
         return read_smtp_config(db)
+    finally:
+        db.close()
+
+
+@app.get("/config/dkim")
+def get_dkim_config(user=Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        return read_dkim_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/dkim")
+def update_dkim_config(
+    payload: DkimConfigUpdate, user=Depends(get_current_admin)
+):
+    selectors = _normalize_dkim_selector_text(payload.selectors_text or "")
+    db = SessionLocal()
+    try:
+        ensure_dkim_config_table(db)
+        db.execute(
+            text(
+                """
+                UPDATE dkim_config
+                SET selectors_text=:selectors_text,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {"selectors_text": "\n".join(selectors)},
+        )
+        db.commit()
+        return read_dkim_config(db)
     finally:
         db.close()
 

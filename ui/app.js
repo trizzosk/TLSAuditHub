@@ -103,6 +103,9 @@ const ui = {
   smtpReplyTo: document.getElementById("smtpReplyTo"),
   smtpSubjectTemplate: document.getElementById("smtpSubjectTemplate"),
   reloadSmtpBtn: document.getElementById("reloadSmtpBtn"),
+  dkimForm: document.getElementById("dkimForm"),
+  dkimSelectors: document.getElementById("dkimSelectors"),
+  reloadDkimBtn: document.getElementById("reloadDkimBtn"),
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
   bulkTargetsForm: document.getElementById("bulkTargetsForm"),
   targetsCsvFile: document.getElementById("targetsCsvFile"),
@@ -606,6 +609,8 @@ function activateAdminPage(pageId) {
     loadSchedulerConfig();
   } else if (resolvedPageId === "adminSmtpPage") {
     loadSmtpConfig();
+  } else if (resolvedPageId === "adminDkimPage") {
+    loadDkimConfig();
   } else if (resolvedPageId === "adminUsersPage") {
     refreshUsers();
   } else if (resolvedPageId === "adminLogPage") {
@@ -2375,6 +2380,32 @@ async function saveSmtpConfig(event) {
   }
 }
 
+async function loadDkimConfig() {
+  try {
+    const data = await apiRequest("/config/dkim", { method: "GET" });
+    ui.dkimSelectors.value = data.selectors_text || "";
+    log(`DKIM selector configuration loaded (${data.selector_count ?? 0} selectors).`);
+  } catch (error) {
+    log(`DKIM selector configuration load failed: ${error.message}`);
+  }
+}
+
+async function saveDkimConfig(event) {
+  event.preventDefault();
+  try {
+    const data = await apiRequest("/config/dkim", {
+      method: "PUT",
+      body: JSON.stringify({
+        selectors_text: ui.dkimSelectors.value || "",
+      }),
+    });
+    ui.dkimSelectors.value = data.selectors_text || "";
+    log(`DKIM selector configuration saved (${data.selector_count ?? 0} selectors).`);
+  } catch (error) {
+    log(`DKIM selector configuration save failed: ${error.message}`);
+  }
+}
+
 function applySchedulerFrequencyVisibility(frequency) {
   const value = String(frequency || "daily").toLowerCase();
   const isInterval = value === "interval";
@@ -2884,6 +2915,8 @@ ui.schedulerFrequency.addEventListener("change", () => {
 });
 ui.smtpForm.addEventListener("submit", saveSmtpConfig);
 ui.reloadSmtpBtn.addEventListener("click", loadSmtpConfig);
+ui.dkimForm.addEventListener("submit", saveDkimConfig);
+ui.reloadDkimBtn.addEventListener("click", loadDkimConfig);
 ui.smtpUseAuth.addEventListener("change", () => {
   applySmtpAuthVisibility(ui.smtpUseAuth.checked);
 });
