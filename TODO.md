@@ -5,8 +5,8 @@ This backlog captures candidate checks/functionality to add on top of current SS
 ## High Priority
 
 - [ ] **DKIM checks**
-  - [ ] Discover selectors (or use configured selector list).
-  - [ ] Validate DKIM TXT syntax (`v=DKIM1`, `k=`, `p=` fields).
+  - [x] Discover selectors with configurable selector list + fallback heuristics.
+  - [x] Validate DKIM TXT syntax (`v=DKIM1`, `k=`, `p=` fields).
   - [ ] Validate key strength/algorithm (flag weak RSA key sizes).
 
 - [ ] **MTA-STS checks**

@@ -1217,6 +1217,10 @@ function renderDnsData(targetLabel, payload) {
   const data = payload.data || {};
   const whois = data.whois || {};
   const dmarc = data.dmarc || {};
+  const dkim = data.dkim || {};
+  const dkimRecords = Array.isArray(dkim.records) ? dkim.records : [];
+  const dkimSummary = dkim.summary || {};
+  const dkimPresent = dkimRecords.length > 0;
   const spfPresent = Boolean(data.spf);
   const dmarcPresent = Boolean(dmarc.record);
   const dmarcPolicyRaw = String(dmarc.policy || "").trim();
@@ -1233,6 +1237,7 @@ function renderDnsData(targetLabel, payload) {
         <dt>Updated</dt><dd>${sevBadge(fmtDate(payload.updated_at), payload.updated_at ? "good" : "warn")}</dd>
         <dt>SPF Record</dt><dd>${sevBadge(spfPresent ? "Yes" : "No", spfPresent ? "good" : "warn")}</dd>
         <dt>DMARC Record</dt><dd>${sevBadge(dmarcPresent ? "Yes" : "No", dmarcPresent ? "good" : "warn")}</dd>
+        <dt>DKIM Records</dt><dd>${sevBadge(dkimPresent ? "Yes" : "No", dkimPresent ? "good" : "warn")}</dd>
         <dt>DMARC Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarcPolicySeverity)}</dd>
       </dl>
     </article>
@@ -1277,6 +1282,41 @@ function renderDnsData(targetLabel, payload) {
         <dt>Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarcPolicySeverity)}</dd>
       </dl>
       ${dmarcPresent ? `<pre>${escapeHtml(dmarc.record)}</pre>` : "<p class='muted'>No DMARC record found.</p>"}
+    </article>
+    <article class="result-card">
+      <h4>DKIM Discovery</h4>
+      <dl class="result-grid">
+        <dt>Candidate Domains</dt><dd class="tiny-mono">${sevBadge(
+          Array.isArray(dkim.domains) && dkim.domains.length ? dkim.domains.join(", ") : "-",
+          Array.isArray(dkim.domains) && dkim.domains.length ? "good" : "warn"
+        )}</dd>
+        <dt>Selectors Used</dt><dd>${sevBadge(
+          Array.isArray(dkim.selectors) ? String(dkim.selectors.length) : "-",
+          Array.isArray(dkim.selectors) && dkim.selectors.length ? "good" : "warn"
+        )}</dd>
+        <dt>Queries</dt><dd>${sevBadge(
+          `${dkimSummary.queries_total ?? 0} (limit ${dkimSummary.max_queries ?? "-"})`,
+          dkimSummary.queries_total ? "good" : "warn"
+        )}</dd>
+        <dt>Records Found</dt><dd>${sevBadge(
+          String(dkimSummary.queries_with_records ?? dkimRecords.length),
+          dkimPresent ? "good" : "warn"
+        )}</dd>
+      </dl>
+      ${
+        dkimPresent
+          ? dkimRecords
+              .map(
+                (row) => `
+        <div class="mt-2 mb-2">
+          <div class="tiny-mono">${escapeHtml(row.fqdn || "-")}</div>
+          <div class="form-hint">Selector: ${escapeHtml(row.selector || "-")}, key: ${escapeHtml(row.key_type || "-")}, size hint: ${escapeHtml(String(row.public_key_size_hint_bits || 0))} bits</div>
+          ${row.record ? `<pre>${escapeHtml(row.record)}</pre>` : ""}
+        </div>`
+              )
+              .join("")
+          : "<p class='muted'>No DKIM records found for tested selectors/domains.</p>"
+      }
     </article>
     <article class="result-card">
       <h4>WHOIS</h4>
@@ -1544,8 +1584,9 @@ async function refreshReports() {
       `Loaded report '${reportId}' (${Array.isArray(data.items) ? data.items.length : 0} rows).`
     );
   } catch (error) {
+    const msg = escapeHtml(error?.message || "Failed to load report.");
     ui.reportsBody.innerHTML =
-      "<tr><td colspan='6' class='muted'>Failed to load report.</td></tr>";
+      `<tr><td colspan='6' class='muted'>Failed to load report: ${msg}</td></tr>`;
     currentReportItems = [];
     syncReportsSelectAll();
     log(`Report load failed: ${error.message}`);

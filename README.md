@@ -59,6 +59,10 @@ If your environment uses internal DNS with forwarding to external resolvers, you
 - `DNS_USE_SEARCH` enable resolver search behavior (`true`/`false`, default `true`)
 - `WHOIS_SKIP_SUFFIXES` comma-separated suffixes to skip WHOIS for internal/private domains  
   (default: `.internal,.local,.corp,.lan,.home,localhost`)
+- `DKIM_SELECTORS` comma-separated selectors to test first (example: `selector1,selector2,s1,s2`)
+- `DKIM_EXTRA_SELECTORS` additional selectors appended after `DKIM_SELECTORS`
+- `DKIM_INCLUDE_DEFAULT_SELECTORS` include built-in fallback selector list (`true`/`false`, default `true`)
+- `DKIM_MAX_QUERIES` hard limit for DKIM TXT queries per host (default `48`)
 
 Example `.env`:
 
@@ -71,7 +75,21 @@ DNS_TIMEOUT_SECONDS=4
 DNS_ATTEMPTS=3
 DNS_USE_SEARCH=true
 WHOIS_SKIP_SUFFIXES=.internal,.local,.corp,.lan,.home,localhost
+DKIM_SELECTORS=selector1,selector2,s1,s2
+DKIM_EXTRA_SELECTORS=default,mail,mx
+DKIM_INCLUDE_DEFAULT_SELECTORS=true
+DKIM_MAX_QUERIES=48
 ```
+
+### DKIM discovery model (no external selector API dependency)
+DKIM selector lookup does not rely on public selector APIs. Instead, worker DNS collection:
+
+- builds candidate mail domains from target hostname and MX hostnames,
+- tests configured selectors (`DKIM_SELECTORS`, `DKIM_EXTRA_SELECTORS`),
+- optionally appends built-in fallback selectors,
+- performs bounded brute-force TXT lookups on `<selector>._domainkey.<candidate-domain>`.
+
+This approach works better in mixed/regional environments (including `cz`, `sk`, `eu`, `hu`) where public selector APIs are incomplete.
 
 ### Split-brain DNS support (per target)
 Targets support `dns_scope` with values:

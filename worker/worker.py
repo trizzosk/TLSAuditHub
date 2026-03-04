@@ -1052,6 +1052,197 @@ def _parse_dmarc_policy(record):
     return ""
 
 
+def _env_bool(name, default):
+    raw = os.environ.get(name, "true" if default else "false")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_host_name(value):
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _candidate_domain_variants(domain):
+    host = _normalize_host_name(domain)
+    if not host or "." not in host:
+        return [host] if host else []
+    labels = host.split(".")
+    out = []
+    if len(labels) >= 3:
+        out.append(".".join(labels[-3:]))
+    if len(labels) >= 2:
+        out.append(".".join(labels[-2:]))
+    out.append(host)
+    dedup = []
+    seen = set()
+    for item in out:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        dedup.append(item)
+    return dedup
+
+
+def _dkim_default_selectors():
+    return [
+        "selector1",
+        "selector2",
+        "s1",
+        "s2",
+        "k1",
+        "k2",
+        "default",
+        "dkim",
+        "mail",
+        "mx",
+        "google",
+        "smtp",
+        "smtpapi",
+        "m1",
+        "m2",
+        "key1",
+        "key2",
+    ]
+
+
+def _sanitize_selector(value):
+    selector = str(value or "").strip().lower()
+    if not selector:
+        return ""
+    if not re.match(r"^[a-z0-9][a-z0-9._-]{0,62}$", selector):
+        return ""
+    return selector
+
+
+def _dkim_selector_candidates():
+    configured = [_sanitize_selector(v) for v in _split_csv_env(os.environ.get("DKIM_SELECTORS", ""))]
+    extra = [_sanitize_selector(v) for v in _split_csv_env(os.environ.get("DKIM_EXTRA_SELECTORS", ""))]
+    include_defaults = _env_bool("DKIM_INCLUDE_DEFAULT_SELECTORS", True)
+
+    out = []
+    seen = set()
+    for selector in configured + extra + (_dkim_default_selectors() if include_defaults else []):
+        if not selector or selector in seen:
+            continue
+        seen.add(selector)
+        out.append(selector)
+    return out
+
+
+def _dkim_candidate_domains(hostname, mx_records):
+    out = []
+    seen = set()
+
+    def add_domains(source):
+        for candidate in _candidate_domain_variants(source):
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            out.append(candidate)
+
+    add_domains(hostname)
+    for mx in mx_records or []:
+        if isinstance(mx, dict):
+            add_domains(mx.get("exchange"))
+        else:
+            add_domains(mx)
+    return out
+
+
+def _extract_dkim_record(txt_records):
+    for record in txt_records or []:
+        if str(record or "").strip().lower().startswith("v=dkim1"):
+            return str(record).strip()
+    return ""
+
+
+def _parse_tag_pairs(record):
+    tags = {}
+    for part in [p.strip() for p in str(record or "").split(";") if p.strip()]:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        tags[key.strip().lower()] = value.strip()
+    return tags
+
+
+def _dkim_key_size_hint_bits(public_key_b64):
+    key = str(public_key_b64 or "").strip()
+    if not key:
+        return 0
+    return int(len(key) * 6)
+
+
+def _query_dkim_records(hostname, mx_records, resolver, attempts):
+    domains = _dkim_candidate_domains(hostname, mx_records)
+    selectors = _dkim_selector_candidates()
+    max_queries = _env_int("DKIM_MAX_QUERIES", 48, minimum=1)
+    query_meta = []
+    records = []
+    query_count = 0
+    found_count = 0
+
+    for domain in domains:
+        for selector in selectors:
+            if query_count >= max_queries:
+                break
+            query_count += 1
+            fqdn = f"{selector}._domainkey.{domain}"
+            txt_records, meta = _resolve_records(fqdn, "TXT", resolver, attempts)
+            dkim_record = _extract_dkim_record(txt_records)
+            found = bool(dkim_record)
+            if found:
+                found_count += 1
+                tags = _parse_tag_pairs(dkim_record)
+                key_type = str(tags.get("k") or "rsa").lower()
+                key_hint_bits = _dkim_key_size_hint_bits(tags.get("p") or "")
+                weak_key_hint = bool(
+                    key_type == "rsa" and key_hint_bits and key_hint_bits < 2048
+                )
+                records.append(
+                    {
+                        "selector": selector,
+                        "domain": domain,
+                        "fqdn": fqdn,
+                        "record": dkim_record,
+                        "key_type": key_type,
+                        "service": tags.get("s") or "",
+                        "flags": tags.get("t") or "",
+                        "public_key_present": bool(tags.get("p")),
+                        "public_key_size_hint_bits": key_hint_bits,
+                        "weak_key_hint": weak_key_hint,
+                    }
+                )
+            if found or len(query_meta) < 24:
+                query_meta.append(
+                    {
+                        "selector": selector,
+                        "domain": domain,
+                        "fqdn": fqdn,
+                        "ok": bool(meta.get("ok")),
+                        "error_code": str(meta.get("error_code") or ""),
+                        "found_record": found,
+                    }
+                )
+        if query_count >= max_queries:
+            break
+
+    return {
+        "domains": domains,
+        "selectors": selectors,
+        "records": records,
+        "query_meta": query_meta,
+        "summary": {
+            "queries_total": query_count,
+            "queries_with_records": found_count,
+            "queries_without_records": max(0, query_count - found_count),
+            "selector_count": len(selectors),
+            "domain_count": len(domains),
+            "max_queries": max_queries,
+            "truncated": bool(query_count >= max_queries),
+        },
+    }
+
+
 def _build_dns_payload(hostname, dns_scope="system"):
     host = str(hostname or "").strip()
     dns_cfg = _dns_config_for_scope(dns_scope)
@@ -1069,6 +1260,20 @@ def _build_dns_payload(hostname, dns_scope="system"):
         "mx": [],
         "spf": "",
         "dmarc": {"record": "", "policy": "", "domain": ""},
+        "dkim": {
+            "domains": [],
+            "selectors": [],
+            "records": [],
+            "summary": {
+                "queries_total": 0,
+                "queries_with_records": 0,
+                "queries_without_records": 0,
+                "selector_count": 0,
+                "domain_count": 0,
+                "max_queries": _env_int("DKIM_MAX_QUERIES", 48, minimum=1),
+                "truncated": False,
+            },
+        },
         "dns_meta": {
             "config": {
                 "scope": dns_cfg.get("scope", "system"),
@@ -1142,6 +1347,14 @@ def _build_dns_payload(hostname, dns_scope="system"):
             "policy": _parse_dmarc_policy(dmarc_record),
             "domain": dmarc_domain,
         }
+        dkim = _query_dkim_records(host, payload["mx"], resolver, attempts)
+        payload["dkim"] = {
+            "domains": dkim["domains"],
+            "selectors": dkim["selectors"],
+            "records": dkim["records"],
+            "summary": dkim["summary"],
+        }
+        payload["dns_meta"]["queries"]["dkim_txt"] = dkim["query_meta"]
     else:
         payload["resolved_ips"] = [host]
         payload["dns_meta"]["queries"]["resolved_ips"] = {

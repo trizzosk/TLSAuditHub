@@ -3105,6 +3105,15 @@ def _build_report_items(db, report_id: str):
     raise HTTPException(status_code=400, detail="Unsupported report_id")
 
 
+def _normalize_report_id(value: str) -> str:
+    report_id = str(value or "").strip().lower()
+    aliases = {
+        "https_posture": "https_posture_issues",
+        "cipher_hygiene": "cipher_hygiene_risk",
+    }
+    return aliases.get(report_id, report_id)
+
+
 def _render_subject(template: str, report_meta: dict, row_count: int):
     clean = (template or "{finding_name}").strip() or "{finding_name}"
     return (
@@ -3179,6 +3188,7 @@ def report_findings(
     offset: int = 0,
     user=Depends(get_current_user),
 ):
+    report_id = _normalize_report_id(report_id)
     report_meta = REPORT_DEFINITIONS.get(report_id)
     if not report_meta:
         raise HTTPException(
@@ -3211,7 +3221,7 @@ def report_findings(
 
 @app.post("/reports/email")
 def send_report_email(payload: ReportEmailRequest, user=Depends(get_current_admin)):
-    report_id = (payload.report_id or "").strip()
+    report_id = _normalize_report_id(payload.report_id or "")
     report_meta = REPORT_DEFINITIONS.get(report_id)
     if not report_meta:
         raise HTTPException(
