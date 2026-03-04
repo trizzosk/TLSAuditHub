@@ -1,7 +1,8 @@
 # TLSAuditHub
 
 [![CI](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml/badge.svg)](https://github.com/trizzosk/TLSAuditHub/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/badge/release-0.6-blue)](https://github.com/trizzosk/TLSAuditHub/releases)
+[![Latest Release](https://img.shields.io/badge/release-0.7-blue)](https://github.com/trizzosk/TLSAuditHub/releases)
+[![Vibe Coding](https://img.shields.io/badge/vibe%20coding-on-ff69b4)](https://img.shields.io/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/downloads/release/python-3120/)
 
