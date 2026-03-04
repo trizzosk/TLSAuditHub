@@ -22,6 +22,7 @@ import urllib.request
 import hashlib
 import base64
 import json
+from datetime import datetime, timezone
 from uuid import UUID
 from io import StringIO
 from email.message import EmailMessage
@@ -224,6 +225,26 @@ REPORT_DEFINITIONS = {
             "Targets where DMARC is missing from DNS or DMARC policy is p=none."
         ),
         "severity": "high",
+    },
+    "https_posture_issues": {
+        "id": "https_posture_issues",
+        "finding_id": "HTTPS_POSTURE_ISSUES",
+        "title": "Hosts With HTTPS Posture Issues",
+        "description": (
+            "Targets with weak/missing HSTS, HTTP to HTTPS redirect gaps, "
+            "or certificates near expiry."
+        ),
+        "severity": "medium",
+    },
+    "cipher_hygiene_risk": {
+        "id": "cipher_hygiene_risk",
+        "finding_id": "CIPHER_HYGIENE_RISK",
+        "title": "Hosts With Cipher Hygiene Risk",
+        "description": (
+            "Targets with elevated TLS/cipher risk based on legacy protocol "
+            "support, weak ciphers, and missing hardening signals."
+        ),
+        "severity": "medium",
     },
 }
 
@@ -2646,6 +2667,99 @@ def _coerce_support_flag(value):
     return False
 
 
+def _extract_hsts_issues(headers: dict) -> list[str]:
+    issues = []
+    hsts = (headers or {}).get("strict_transport_security") or {}
+    if not hsts:
+        return ["hsts missing"]
+    max_age = int(hsts.get("max_age") or 0)
+    if max_age < 31536000:
+        issues.append(f"hsts max-age too low ({max_age})")
+    if not bool(hsts.get("include_subdomains")):
+        issues.append("hsts includeSubDomains missing")
+    if not bool(hsts.get("preload")):
+        issues.append("hsts preload missing")
+    return issues
+
+
+def _probe_http_to_https_redirect(hostname: str, timeout_seconds: float = 4.0):
+    host = str(hostname or "").strip()
+    if not host:
+        return False, "empty hostname"
+    if _is_ip_address(host):
+        return False, "ip target (redirect check skipped)"
+    url = f"http://{host}/"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "TLSAuditHub/1.0"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            final_url = str(response.geturl() or "")
+            if final_url.lower().startswith("https://"):
+                return True, f"redirects to {final_url}"
+            return False, f"final_url={final_url or url}"
+    except Exception as exc:
+        return False, f"redirect probe failed: {exc.__class__.__name__}"
+
+
+def _parse_iso_utc(value):
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text_value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _extract_cert_near_expiry_issue(cert_info: dict, days: int = 30) -> str:
+    certs = (cert_info or {}).get("certificate_chain") or []
+    if not certs:
+        return "certificate info missing"
+    leaf = certs[0] or {}
+    not_after = _parse_iso_utc(leaf.get("not_after"))
+    if not not_after:
+        return "certificate not_after unavailable"
+    now = datetime.now(timezone.utc)
+    remaining = (not_after - now).total_seconds()
+    if remaining < 0:
+        return f"certificate expired ({leaf.get('not_after')})"
+    remaining_days = int(remaining // 86400)
+    if remaining_days <= days:
+        return f"certificate expires soon ({remaining_days} days)"
+    return ""
+
+
+def _looks_weak_cipher_name(cipher_name: str) -> bool:
+    value = str(cipher_name or "").upper()
+    weak_tokens = [
+        "RC4",
+        "3DES",
+        "DES",
+        "NULL",
+        "MD5",
+        "EXPORT",
+        "ANON",
+        "IDEA",
+        "SEED",
+        "PSK",
+    ]
+    return any(token in value for token in weak_tokens)
+
+
+def _has_forward_secrecy(cipher_names: list[str]) -> bool:
+    for cipher in cipher_names:
+        upper = str(cipher or "").upper()
+        if "ECDHE" in upper or ("DHE" in upper and "PSK" not in upper):
+            return True
+    return False
+
+
 def _build_no_tls13_items(db):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
@@ -2857,6 +2971,122 @@ def _build_missing_dmarc_policy_items(db):
     return items
 
 
+def _build_https_posture_issue_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["http_headers", "certificate_info"],
+    )
+    report = REPORT_DEFINITIONS["https_posture_issues"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        results = by_scan.get(scan_id) or {}
+        headers = results.get("http_headers") or {}
+        cert_info = results.get("certificate_info") or {}
+        issues = []
+        issues.extend(_extract_hsts_issues(headers))
+        redirect_ok, redirect_info = _probe_http_to_https_redirect(str(row["hostname"]))
+        if not redirect_ok:
+            issues.append(f"http->https redirect not confirmed ({redirect_info})")
+        cert_issue = _extract_cert_near_expiry_issue(cert_info, days=30)
+        if cert_issue:
+            issues.append(cert_issue)
+        if not issues:
+            continue
+        severity = "high" if any("expired" in i for i in issues) else "medium"
+        proof = "; ".join(issues)
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": severity,
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_cipher_hygiene_risk_items(db):
+    latest = _latest_completed_scans(db)
+    plugins = [
+        "ssl_2_0_cipher_suites",
+        "ssl_3_0_cipher_suites",
+        "tls_1_0_cipher_suites",
+        "tls_1_1_cipher_suites",
+        "tls_1_2_cipher_suites",
+        "tls_1_3_cipher_suites",
+        "tls_compression",
+        "tls_fallback_scsv",
+    ]
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        plugins,
+    )
+    report = REPORT_DEFINITIONS["cipher_hygiene_risk"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        results = by_scan.get(scan_id) or {}
+
+        penalties = []
+        penalty_points = 0
+
+        def add_penalty(points: int, reason: str):
+            nonlocal penalty_points
+            penalty_points += points
+            penalties.append(f"-{points} {reason}")
+
+        if _coerce_support_flag((results.get("ssl_2_0_cipher_suites") or {}).get("is_protocol_supported")):
+            add_penalty(40, "SSLv2 supported")
+        if _coerce_support_flag((results.get("ssl_3_0_cipher_suites") or {}).get("is_protocol_supported")):
+            add_penalty(35, "SSLv3 supported")
+        if _coerce_support_flag((results.get("tls_1_0_cipher_suites") or {}).get("is_protocol_supported")):
+            add_penalty(25, "TLS 1.0 supported")
+        if _coerce_support_flag((results.get("tls_1_1_cipher_suites") or {}).get("is_protocol_supported")):
+            add_penalty(20, "TLS 1.1 supported")
+
+        tls13_supported = _coerce_support_flag((results.get("tls_1_3_cipher_suites") or {}).get("is_protocol_supported"))
+        if not tls13_supported:
+            add_penalty(10, "TLS 1.3 not supported")
+
+        accepted_cipher_names = []
+        for plugin in ("tls_1_2_cipher_suites", "tls_1_3_cipher_suites"):
+            accepted_cipher_names.extend((results.get(plugin) or {}).get("accepted_cipher_suites") or [])
+        weak_cipher_count = sum(1 for name in accepted_cipher_names if _looks_weak_cipher_name(name))
+        if weak_cipher_count > 0:
+            add_penalty(20, f"weak cipher patterns detected ({weak_cipher_count})")
+        if accepted_cipher_names and not _has_forward_secrecy(accepted_cipher_names):
+            add_penalty(20, "no forward secrecy cipher negotiated")
+
+        if bool((results.get("tls_compression") or {}).get("supports_compression")):
+            add_penalty(10, "TLS compression enabled")
+        fallback_support = (results.get("tls_fallback_scsv") or {}).get("supports_fallback_scsv")
+        if fallback_support is False:
+            add_penalty(5, "TLS fallback SCSV not supported")
+
+        score = max(0, 100 - penalty_points)
+        if score >= 90:
+            continue
+        severity = "high" if score < 60 else "medium" if score < 80 else "low"
+        proof = f"score={score}; penalties={', '.join(penalties) if penalties else 'none'}"
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": severity,
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
 def _build_report_items(db, report_id: str):
     if report_id == "no_tls13":
         return _build_no_tls13_items(db)
@@ -2868,6 +3098,10 @@ def _build_report_items(db, report_id: str):
         return _build_missing_hsts_items(db)
     if report_id == "missing_dmarc_policy":
         return _build_missing_dmarc_policy_items(db)
+    if report_id == "https_posture_issues":
+        return _build_https_posture_issue_items(db)
+    if report_id == "cipher_hygiene_risk":
+        return _build_cipher_hygiene_risk_items(db)
     raise HTTPException(status_code=400, detail="Unsupported report_id")
 
 

@@ -20,6 +20,8 @@ The core TLS scanning engine in this project is [`sslyze`](https://github.com/na
 - Results view for job output details.
 - Spoofable report view to highlight domains with weak SPF/DMARC posture.
 - DNS data collection per target (WHOIS, NS, MX, SPF, DMARC) used by reports.
+- Built-in report findings for TLS 1.3 gaps, legacy SSL, SPF/DMARC posture,
+  HTTPS posture issues, and cipher hygiene risk scoring.
 - Admin proxy configuration for outbound scan traffic.
 - Web UI for exercising the API and dashboards.
 
@@ -135,6 +137,15 @@ Usage flow:
 2. Open **Reports**, pick report type, click **Refresh**.
 3. Click **Send Email**.
 4. Optionally set a one-time subject override (or leave empty to use template).
+
+Available report IDs:
+- `no_tls13`
+- `legacy_ssl_enabled`
+- `spf_not_strict`
+- `missing_hsts`
+- `missing_dmarc_policy`
+- `https_posture_issues`
+- `cipher_hygiene_risk`
 
 ### Run everything (API + workers + UI)
 1. `docker compose up`
