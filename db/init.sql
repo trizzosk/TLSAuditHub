@@ -6,6 +6,8 @@ CREATE TABLE targets (
     port INT NOT NULL DEFAULT 443,
     dns_scope TEXT NOT NULL DEFAULT 'system'
         CHECK (dns_scope IN ('system', 'private', 'public')),
+    dns_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    tls_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     enabled BOOLEAN DEFAULT TRUE,
     scan_interval_minutes INT DEFAULT 1440
 );

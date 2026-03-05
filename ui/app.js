@@ -15,10 +15,18 @@ const ui = {
   metricScansRunning: document.getElementById("metricScansRunning"),
   metricResultsTotal: document.getElementById("metricResultsTotal"),
   metricDiffsTotal: document.getElementById("metricDiffsTotal"),
+  metricMailTargetsTotal: document.getElementById("metricMailTargetsTotal"),
+  metricMailSpfStrict: document.getElementById("metricMailSpfStrict"),
+  metricMailDmarcEnforced: document.getElementById("metricMailDmarcEnforced"),
+  metricMailDkimPresent: document.getElementById("metricMailDkimPresent"),
+  metricMailSpoofable: document.getElementById("metricMailSpoofable"),
   targetForm: document.getElementById("targetForm"),
   hostname: document.getElementById("hostname"),
   port: document.getElementById("port"),
   dnsScope: document.getElementById("dnsScope"),
+  checksTlsEnabled: document.getElementById("checksTlsEnabled"),
+  checksDnsEnabled: document.getElementById("checksDnsEnabled"),
+  exportTargetsCsvBtn: document.getElementById("exportTargetsCsvBtn"),
   refreshTargetsBtn: document.getElementById("refreshTargetsBtn"),
   targetsBody: document.getElementById("targetsBody"),
   editTargetPanel: document.getElementById("editTargetPanel"),
@@ -27,10 +35,15 @@ const ui = {
   editTargetHostname: document.getElementById("editTargetHostname"),
   editTargetPort: document.getElementById("editTargetPort"),
   editTargetDnsScope: document.getElementById("editTargetDnsScope"),
+  editTargetTlsChecksEnabled: document.getElementById("editTargetTlsChecksEnabled"),
+  editTargetDnsChecksEnabled: document.getElementById("editTargetDnsChecksEnabled"),
   editTargetStatus: document.getElementById("editTargetStatus"),
   cancelEditTargetBtn: document.getElementById("cancelEditTargetBtn"),
   dnsPanel: document.getElementById("dnsPanel"),
   targetsPageSize: document.getElementById("targetsPageSize"),
+  targetsSearch: document.getElementById("targetsSearch"),
+  targetsSearchBtn: document.getElementById("targetsSearchBtn"),
+  targetsClearSearchBtn: document.getElementById("targetsClearSearchBtn"),
   targetsPrevBtn: document.getElementById("targetsPrevBtn"),
   targetsNextBtn: document.getElementById("targetsNextBtn"),
   targetsPageInfo: document.getElementById("targetsPageInfo"),
@@ -38,6 +51,8 @@ const ui = {
   exportSpoofableCsvBtn: document.getElementById("exportSpoofableCsvBtn"),
   exportSpoofablePdfBtn: document.getElementById("exportSpoofablePdfBtn"),
   spoofableBody: document.getElementById("spoofableBody"),
+  spoofableDmarcFilter: document.getElementById("spoofableDmarcFilter"),
+  spoofableResultFilter: document.getElementById("spoofableResultFilter"),
   spoofablePageSize: document.getElementById("spoofablePageSize"),
   spoofablePrevBtn: document.getElementById("spoofablePrevBtn"),
   spoofableNextBtn: document.getElementById("spoofableNextBtn"),
@@ -61,6 +76,15 @@ const ui = {
   reportsPrevBtn: document.getElementById("reportsPrevBtn"),
   reportsNextBtn: document.getElementById("reportsNextBtn"),
   reportsPageInfo: document.getElementById("reportsPageInfo"),
+  reportDrilldownPanel: document.getElementById("reportDrilldownPanel"),
+  reportDrilldownEmpty: document.getElementById("reportDrilldownEmpty"),
+  reportDrilldownContent: document.getElementById("reportDrilldownContent"),
+  reportDrilldownHost: document.getElementById("reportDrilldownHost"),
+  reportDrilldownFinding: document.getElementById("reportDrilldownFinding"),
+  reportDrilldownSeverity: document.getElementById("reportDrilldownSeverity"),
+  reportDrilldownScanTime: document.getElementById("reportDrilldownScanTime"),
+  reportDrilldownProof: document.getElementById("reportDrilldownProof"),
+  reportDrilldownHints: document.getElementById("reportDrilldownHints"),
   refreshJobsBtn: document.getElementById("refreshJobsBtn"),
   jobsBody: document.getElementById("jobsBody"),
   jobsPageSize: document.getElementById("jobsPageSize"),
@@ -106,9 +130,16 @@ const ui = {
   dkimForm: document.getElementById("dkimForm"),
   dkimSelectors: document.getElementById("dkimSelectors"),
   reloadDkimBtn: document.getElementById("reloadDkimBtn"),
+  checksConfigForm: document.getElementById("checksConfigForm"),
+  reloadChecksConfigBtn: document.getElementById("reloadChecksConfigBtn"),
+  checksConfigTableBody: document.getElementById("checksConfigTableBody"),
+  checkDkimMinRsaBits: document.getElementById("checkDkimMinRsaBits"),
+  checkCertExpiryDays: document.getElementById("checkCertExpiryDays"),
+  checkHstsMinMaxAge: document.getElementById("checkHstsMinMaxAge"),
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
   bulkTargetsForm: document.getElementById("bulkTargetsForm"),
   targetsCsvFile: document.getElementById("targetsCsvFile"),
+  downloadTargetsTemplateBtn: document.getElementById("downloadTargetsTemplateBtn"),
   purgeTargetsBtn: document.getElementById("purgeTargetsBtn"),
   purgeDnsBtn: document.getElementById("purgeDnsBtn"),
   purgeJobsAdminBtn: document.getElementById("purgeJobsAdminBtn"),
@@ -120,6 +151,7 @@ const ui = {
   userEmail: document.getElementById("userEmail"),
   userRoleStandard: document.getElementById("userRoleStandard"),
   userRoleAdmin: document.getElementById("userRoleAdmin"),
+  userCreateStatus: document.getElementById("userCreateStatus"),
   usersBody: document.getElementById("usersBody"),
   editUserPanel: document.getElementById("editUserPanel"),
   editUserForm: document.getElementById("editUserForm"),
@@ -183,10 +215,12 @@ const pagination = {
   reports: { page: 1, pageSize: 10, total: 0 },
   eventLogs: { page: 1, pageSize: 15, total: 0 },
 };
+let targetsSearchText = "";
 let currentReportMeta = null;
 let currentReportItems = [];
 let currentReportId = "";
 const selectedReportTargetIds = new Set();
+let selectedReportRowKey = "";
 let activeAdminPage = "adminUsersPage";
 const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
@@ -303,6 +337,19 @@ function setReportEmailStatus(message = "", type = "") {
     ui.reportEmailStatus.classList.add("form-hint-error");
   } else if (type === "success") {
     ui.reportEmailStatus.classList.add("form-hint-success");
+  }
+}
+
+function setUserCreateStatus(message = "", type = "") {
+  if (!ui.userCreateStatus) {
+    return;
+  }
+  ui.userCreateStatus.textContent = message || "";
+  ui.userCreateStatus.classList.remove("form-hint-error", "form-hint-success");
+  if (type === "error") {
+    ui.userCreateStatus.classList.add("form-hint-error");
+  } else if (type === "success") {
+    ui.userCreateStatus.classList.add("form-hint-success");
   }
 }
 
@@ -611,6 +658,8 @@ function activateAdminPage(pageId) {
     loadSmtpConfig();
   } else if (resolvedPageId === "adminDkimPage") {
     loadDkimConfig();
+  } else if (resolvedPageId === "adminChecksPage") {
+    loadChecksConfig();
   } else if (resolvedPageId === "adminUsersPage") {
     refreshUsers();
   } else if (resolvedPageId === "adminLogPage") {
@@ -952,6 +1001,26 @@ function renderCertificateInfo(result) {
   const sans = Array.isArray(cert.subject_alternative_name)
     ? cert.subject_alternative_name
     : [];
+  const ct = result?.certificate_transparency || {};
+  const rev = result?.revocation || {};
+  const stapling = rev?.ocsp_stapling || {};
+  const ocspUrls = Array.isArray(rev?.ocsp_urls) ? rev.ocsp_urls : [];
+  const crlUrls = Array.isArray(rev?.crl_urls) ? rev.crl_urls : [];
+  const ctSev = ct?.has_embedded_scts ? "good" : "warn";
+  const staplingQuality = String(stapling?.quality || "missing").toLowerCase();
+  const staplingSev =
+    staplingQuality === "good"
+      ? "good"
+      : staplingQuality === "missing"
+        ? "warn"
+        : "bad";
+  const basicStatus = String(rev?.basic_status || "unknown").toLowerCase();
+  const basicStatusSev =
+    basicStatus === "good"
+      ? "good"
+      : basicStatus === "revoked"
+        ? "bad"
+        : "warn";
   return `
     <dl class="result-grid">
       <dt>Subject</dt><dd class="tiny-mono">${sevBadge(cert.subject || "-", "warn")}</dd>
@@ -959,12 +1028,30 @@ function renderCertificateInfo(result) {
       <dt>Valid From</dt><dd>${sevBadge(fmtDate(cert.not_before), classifyCertNotBefore(cert.not_before))}</dd>
       <dt>Valid Until</dt><dd>${sevBadge(fmtDate(cert.not_after), classifyCertNotAfter(cert.not_after))}</dd>
       <dt>SAN</dt><dd>${sevBadge(sans.length ? `${sans.length} names` : "None", sans.length > 0 ? "good" : "bad")}</dd>
+      <dt>CT Embedded SCT</dt><dd>${sevBadge(
+        ct?.has_embedded_scts ? `Yes (${ct?.embedded_scts_count || 0})` : "No",
+        ctSev
+      )}</dd>
+      <dt>OCSP Stapling</dt><dd>${sevBadge(
+        stapling?.present ? `Present (${stapling?.quality || "-"})` : "Missing",
+        staplingSev
+      )}</dd>
+      <dt>Revocation Status</dt><dd>${sevBadge(basicStatus || "-", basicStatusSev)}</dd>
+      <dt>OCSP URLs</dt><dd>${sevBadge(String(ocspUrls.length), ocspUrls.length ? "good" : "warn")}</dd>
+      <dt>CRL URLs</dt><dd>${sevBadge(String(crlUrls.length), crlUrls.length ? "good" : "warn")}</dd>
     </dl>
     ${
       sans.length
         ? `<ul class="result-list">${sans
             .map((name) => `<li class="tiny-mono result-item-good">${escapeHtml(name)}</li>`)
             .join("")}</ul>`
+        : ""
+    }
+    ${
+      stapling?.present
+        ? `<p class="form-hint">Stapled OCSP status: ${escapeHtml(
+            String(stapling?.cert_status || stapling?.response_status || "-")
+          )}</p>`
         : ""
     }
   `;
@@ -1156,6 +1243,11 @@ async function loadDashboard() {
     setMetric(ui.metricScansRunning, data.scans_running);
     setMetric(ui.metricResultsTotal, data.results_total);
     setMetric(ui.metricDiffsTotal, data.diffs_total);
+    setMetric(ui.metricMailTargetsTotal, data.mail_targets_total);
+    setMetric(ui.metricMailSpfStrict, data.mail_spf_strict);
+    setMetric(ui.metricMailDmarcEnforced, data.mail_dmarc_enforced);
+    setMetric(ui.metricMailDkimPresent, data.mail_dkim_present);
+    setMetric(ui.metricMailSpoofable, data.mail_spoofable);
     log("Dashboard summary loaded.");
   } catch (error) {
     log(`Dashboard load failed: ${error.message}`);
@@ -1165,7 +1257,7 @@ async function loadDashboard() {
 function renderTargets(targets) {
   if (!Array.isArray(targets) || targets.length === 0) {
     ui.targetsBody.innerHTML =
-      "<tr><td colspan='6' class='muted'>No targets found</td></tr>";
+      "<tr><td colspan='8' class='muted'>No targets found</td></tr>";
     return;
   }
 
@@ -1177,17 +1269,21 @@ function renderTargets(targets) {
         const hostnameRaw = escapeHtml(String(target.hostname || ""));
         const dnsScopeRaw = String(target.dns_scope || "system").toLowerCase();
         const dnsScope = escapeHtml(dnsScopeRaw);
+        const tlsChecksEnabled = Boolean(target.tls_checks_enabled);
+        const dnsChecksEnabled = Boolean(target.dns_checks_enabled);
         return `
       <tr>
         <td>${hostnameRaw}</td>
         <td>${target.port ?? ""}</td>
         <td>${dnsScope}</td>
+        <td>${tlsChecksEnabled ? "Yes" : "No"}</td>
+        <td>${dnsChecksEnabled ? "Yes" : "No"}</td>
         <td>${target.enabled ? "Yes" : "No"}</td>
         <td>${target.scan_interval_minutes ?? "-"}</td>
         <td>
           <div class="target-actions">
-            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" data-dns-scope="${dnsScope}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
-            <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="Run scan for ${hostname}">Run Scan</button>
+            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" data-dns-scope="${dnsScope}" data-tls-checks-enabled="${tlsChecksEnabled}" data-dns-checks-enabled="${dnsChecksEnabled}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
+            <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="${tlsChecksEnabled ? `Run scan for ${hostname}` : `TLS checks are disabled for ${hostname}`}" ${tlsChecksEnabled ? "" : "disabled"}>Run Scan</button>
             <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" class="dns-data-btn btn btn-sm btn-outline-secondary" aria-label="View DNS data for ${hostname}" title="View DNS data for ${hostname}">DNS Data</button>
             <button data-target-id="${targetId}" class="delete-target-btn btn btn-sm btn-outline-danger" aria-label="Delete target ${hostname}" title="Delete target ${hostname}">Delete</button>
           </div>
@@ -1225,6 +1321,19 @@ function renderDnsData(targetLabel, payload) {
   const dkim = data.dkim || {};
   const dkimRecords = Array.isArray(dkim.records) ? dkim.records : [];
   const dkimSummary = dkim.summary || {};
+  const m365 = data.m365 || {};
+  const m365Hosted = Boolean(m365.hosted);
+  const m365Confidence = String(m365.confidence || "none");
+  const m365Signals = Array.isArray(m365.signals) ? m365.signals : [];
+  const m365TenantHints = Array.isArray(m365.tenant_hints)
+    ? m365.tenant_hints
+    : [];
+  const m365MsTokens = Array.isArray(m365.ms_verification_tokens)
+    ? m365.ms_verification_tokens
+    : [];
+  const m365TenantAssigned = Boolean(m365.tenant_assigned);
+  const m365ServiceUsage = Boolean(m365.service_usage);
+  const m365Autodiscover = m365.autodiscover || {};
   const dkimPresent = dkimRecords.length > 0;
   const spfPresent = Boolean(data.spf);
   const dmarcPresent = Boolean(dmarc.record);
@@ -1243,6 +1352,7 @@ function renderDnsData(targetLabel, payload) {
         <dt>SPF Record</dt><dd>${sevBadge(spfPresent ? "Yes" : "No", spfPresent ? "good" : "warn")}</dd>
         <dt>DMARC Record</dt><dd>${sevBadge(dmarcPresent ? "Yes" : "No", dmarcPresent ? "good" : "warn")}</dd>
         <dt>DKIM Records</dt><dd>${sevBadge(dkimPresent ? "Yes" : "No", dkimPresent ? "good" : "warn")}</dd>
+        <dt>Hosted In Microsoft 365</dt><dd>${sevBadge(m365Hosted ? "Yes" : "No", m365Hosted ? "good" : "warn")}</dd>
         <dt>DMARC Policy</dt><dd>${sevBadge(dmarc.policy || "-", dmarcPolicySeverity)}</dd>
       </dl>
     </article>
@@ -1315,12 +1425,40 @@ function renderDnsData(targetLabel, payload) {
                 (row) => `
         <div class="mt-2 mb-2">
           <div class="tiny-mono">${escapeHtml(row.fqdn || "-")}</div>
-          <div class="form-hint">Selector: ${escapeHtml(row.selector || "-")}, key: ${escapeHtml(row.key_type || "-")}, size hint: ${escapeHtml(String(row.public_key_size_hint_bits || 0))} bits</div>
+          <div class="form-hint">Selector: ${escapeHtml(row.selector || "-")}, key: ${escapeHtml(row.key_type || "-")}, size hint: ${escapeHtml(String(row.public_key_size_hint_bits || 0))} bits, strength: ${row.weak_key_hint ? "weak (<2048 RSA)" : "ok"}</div>
           ${row.record ? `<pre>${escapeHtml(row.record)}</pre>` : ""}
         </div>`
               )
               .join("")
           : "<p class='muted'>No DKIM records found for tested selectors/domains.</p>"
+      }
+    </article>
+    <article class="result-card">
+      <h4>Microsoft 365 Hosting Detection</h4>
+      <dl class="result-grid">
+        <dt>Hosted</dt><dd>${sevBadge(m365Hosted ? "Yes" : "No", m365Hosted ? "good" : "warn")}</dd>
+        <dt>Confidence</dt><dd>${sevBadge(m365Confidence, m365Hosted ? "good" : "warn")}</dd>
+        <dt>Tenant Assigned</dt><dd>${sevBadge(m365TenantAssigned ? "Yes" : "No", m365TenantAssigned ? "good" : "warn")}</dd>
+        <dt>M365 Service Usage</dt><dd>${sevBadge(m365ServiceUsage ? "Yes" : "No", m365ServiceUsage ? "good" : "warn")}</dd>
+        <dt>Tenant Hints</dt><dd class="tiny-mono">${sevBadge(
+          m365TenantHints.length ? m365TenantHints.join(", ") : "-",
+          m365TenantHints.length ? "good" : "warn"
+        )}</dd>
+        <dt>MS Verification</dt><dd class="tiny-mono">${sevBadge(
+          m365MsTokens.length ? m365MsTokens.map((v) => `MS=${v}`).join(", ") : "-",
+          m365MsTokens.length ? "good" : "warn"
+        )}</dd>
+        <dt>Autodiscover CNAME</dt><dd class="tiny-mono">${sevBadge(
+          m365Autodiscover.target || "-",
+          m365Autodiscover.target ? "good" : "warn"
+        )}</dd>
+      </dl>
+      ${
+        m365Signals.length
+          ? `<ul class="result-list">${m365Signals
+              .map((signal) => `<li class="tiny-mono">${escapeHtml(String(signal))}</li>`)
+              .join("")}</ul>`
+          : "<p class='muted'>No Microsoft 365-specific DNS signals detected.</p>"
       }
     </article>
     <article class="result-card">
@@ -1438,6 +1576,59 @@ function evaluateSpoofable(spf, dmarcPolicy, hasMx, hasA, hasAaaa) {
   return { label: "Needs review", severity: "warn" };
 }
 
+function spoofableDmarcBucket(dmarcPolicy) {
+  const policy = String(dmarcPolicy || "").trim().toLowerCase();
+  if (!policy) {
+    return "missing";
+  }
+  if (policy === "none") {
+    return "none";
+  }
+  if (policy === "quarantine") {
+    return "quarantine";
+  }
+  if (policy === "reject") {
+    return "reject";
+  }
+  return "other";
+}
+
+function spoofableResultBucket(resultLabel) {
+  const value = String(resultLabel || "").trim().toLowerCase();
+  if (value === "spoofable") {
+    return "spoofable";
+  }
+  if (value === "needs review") {
+    return "needs_review";
+  }
+  if (value === "not spoofable") {
+    return "not_spoofable";
+  }
+  return "other";
+}
+
+function applySpoofableFilters(items) {
+  const rows = Array.isArray(items) ? items : [];
+  const dmarcFilter = String(ui.spoofableDmarcFilter?.value || "all");
+  const resultFilter = String(ui.spoofableResultFilter?.value || "all");
+  return rows.filter((row) => {
+    const result = evaluateSpoofable(
+      row.spf,
+      row.dmarc_policy,
+      row.has_mx,
+      row.has_a,
+      row.has_aaaa
+    );
+    const dmarcOk =
+      dmarcFilter === "all" ||
+      spoofableDmarcBucket(row.dmarc_policy) === dmarcFilter;
+    const resultOk =
+      resultFilter === "all" ||
+      spoofableResultBucket(result.label) === resultFilter;
+    return dmarcOk && resultOk;
+  });
+}
+
 function renderSpoofableList(items) {
   if (!Array.isArray(items) || items.length === 0) {
     ui.spoofableBody.innerHTML =
@@ -1472,6 +1663,108 @@ function reportSelectionKey(row) {
   return String(row?.target_id || "").trim();
 }
 
+function reportRowKey(row, index) {
+  const base = reportSelectionKey(row) || `row-${index}`;
+  return `${base}:${String(row?.finding_id || "-")}:${String(row?.scan_timestamp_utc || "-")}`;
+}
+
+const REPORT_REMEDIATION_HINTS = {
+  NO_TLS13: [
+    "Enable TLS 1.3 on the frontend/reverse proxy and backend TLS stack.",
+    "Disable legacy protocol-only cipher suites when modern suites are available.",
+    "Re-test with latest scan after TLS policy/certificate updates.",
+  ],
+  SSLV2_OR_SSLV3_ENABLED: [
+    "Disable SSLv2/SSLv3 at server and load balancer levels.",
+    "Keep only TLS 1.2+ (preferably TLS 1.3) in protocol policy.",
+    "Validate no legacy clients require removed protocols.",
+  ],
+  MISSING_HSTS: [
+    "Add Strict-Transport-Security with strong max-age (>= 15552000).",
+    "Enable includeSubDomains once all subdomains are HTTPS-ready.",
+    "Consider preload after sustained verification in production.",
+  ],
+  HTTPS_POSTURE_ISSUES: [
+    "Fix missing/weak HSTS settings and enforce HTTPS redirects.",
+    "Renew/replace certificates before expiry and validate SAN/CN hostname coverage.",
+    "Review wildcard certificate usage and limit scope where possible.",
+  ],
+  CIPHER_HYGIENE_RISK: [
+    "Disable legacy protocols (SSLv2/3, TLS1.0/1.1) and weak ciphers.",
+    "Prefer forward-secrecy suites and keep TLS fallback SCSV enabled.",
+    "Re-scan after TLS policy hardening and confirm score improvement.",
+  ],
+  CT_OR_REVOCATION_GAPS: [
+    "Use certificates with embedded SCTs and monitor CT log visibility.",
+    "Enable OCSP stapling and ensure stapled response quality is good.",
+    "Ensure OCSP/CRL endpoints are reachable and monitor revocation status.",
+  ],
+  CERT_ISSUER_IN_USE: [
+    "Review issuer inventory for approved/trusted CA policy alignment.",
+    "Standardize issuer usage across critical services where appropriate.",
+    "Track unexpected issuer changes as part of certificate governance.",
+  ],
+  WILDCARD_CERT_IN_USE: [
+    "Confirm wildcard certificates are explicitly approved for scope/risk.",
+    "Use host-specific certificates for sensitive systems where feasible.",
+    "Restrict wildcard private key access and rotation windows.",
+  ],
+  SPF_NOT_STRICT: [
+    "Update SPF to end with -all once authorized senders are complete.",
+    "Minimize include-chain complexity and remove stale mechanisms.",
+    "Validate deliverability after SPF enforcement changes.",
+  ],
+  MISSING_OR_WEAK_DMARC_POLICY: [
+    "Publish DMARC with an enforcement policy (quarantine/reject).",
+    "Add rua/ruf reporting endpoints and monitor aggregate reports.",
+    "Align SPF/DKIM for major sending platforms before strict enforcement.",
+  ],
+  WEAK_DKIM_RSA_KEY: [
+    "Rotate DKIM keys to RSA 2048+ (or stronger approved algorithm).",
+    "Retire weak selectors and remove stale DNS records.",
+    "Verify selector rollout across all active mail senders.",
+  ],
+  HOSTED_IN_M365: [
+    "Confirm this domain should be operated through Microsoft 365 mail services.",
+    "Document tenant ownership and approved mail flow for audit/compliance.",
+    "If M365 is unintended, remove Outlook-related DNS dependencies and re-check.",
+  ],
+};
+
+function resetReportDrilldown() {
+  selectedReportRowKey = "";
+  if (!ui.reportDrilldownContent || !ui.reportDrilldownEmpty) {
+    return;
+  }
+  ui.reportDrilldownContent.classList.add("hidden");
+  ui.reportDrilldownEmpty.classList.remove("hidden");
+  if (ui.reportDrilldownHints) {
+    ui.reportDrilldownHints.innerHTML = "";
+  }
+}
+
+function renderReportDrilldown(row) {
+  if (!row || !ui.reportDrilldownContent || !ui.reportDrilldownEmpty) {
+    return;
+  }
+  const findingId = String(row.finding_id || "");
+  const hints = REPORT_REMEDIATION_HINTS[findingId] || [
+    "Review finding proof and validate technical context for this host.",
+    "Apply targeted hardening based on service owner and risk level.",
+    "Re-run scan/report to confirm remediation effectiveness.",
+  ];
+  ui.reportDrilldownHost.textContent = String(row.host_target || "-");
+  ui.reportDrilldownFinding.textContent = findingId || "-";
+  ui.reportDrilldownSeverity.textContent = String(row.severity || "-");
+  ui.reportDrilldownScanTime.textContent = fmtDate(row.scan_timestamp_utc);
+  ui.reportDrilldownProof.textContent = String(row.finding_proof || "-");
+  ui.reportDrilldownHints.innerHTML = hints
+    .map((hint) => `<li>${escapeHtml(hint)}</li>`)
+    .join("");
+  ui.reportDrilldownEmpty.classList.add("hidden");
+  ui.reportDrilldownContent.classList.remove("hidden");
+}
+
 function syncReportsSelectAll() {
   if (!ui.reportsSelectAll) {
     return;
@@ -1502,17 +1795,20 @@ function renderReportRows(items) {
   if (!Array.isArray(items) || items.length === 0) {
     ui.reportsBody.innerHTML =
       "<tr><td colspan='6' class='muted'>No findings for selected report.</td></tr>";
+    resetReportDrilldown();
     syncReportsSelectAll();
     return;
   }
 
   ui.reportsBody.innerHTML = items
     .map(
-      (row) => {
+      (row, index) => {
         const key = reportSelectionKey(row);
         const checked = key && selectedReportTargetIds.has(key) ? "checked" : "";
+        const rowKey = reportRowKey(row, index);
+        const isSelected = rowKey === selectedReportRowKey;
         return `
-      <tr>
+      <tr class="${isSelected ? "table-active" : ""}" data-report-row-key="${escapeHtml(rowKey)}">
         <td>
           <input
             type="checkbox"
@@ -1533,6 +1829,14 @@ function renderReportRows(items) {
     )
     .join("");
   syncReportsSelectAll();
+  if (selectedReportRowKey) {
+    const selectedRow = currentReportItems.find(
+      (row, idx) => reportRowKey(row, idx) === selectedReportRowKey
+    );
+    if (!selectedRow) {
+      resetReportDrilldown();
+    }
+  }
 }
 
 async function loadAllReportItems(reportId) {
@@ -1566,8 +1870,13 @@ async function refreshReports() {
     });
     currentReportMeta = data.report || null;
     if (ui.reportDescription) {
-      ui.reportDescription.textContent =
+      const description =
         currentReportMeta?.description || "No report description available.";
+      const enabled = currentReportMeta?.enabled !== false;
+      const sev = currentReportMeta?.effective_severity || currentReportMeta?.severity || "";
+      ui.reportDescription.textContent = enabled
+        ? `${description}${sev ? ` (effective severity: ${sev})` : ""}`
+        : `${description} (currently disabled in Checks Policy).`;
     }
     pagination.reports.total = data.total ?? 0;
     if (
@@ -1593,6 +1902,7 @@ async function refreshReports() {
     ui.reportsBody.innerHTML =
       `<tr><td colspan='6' class='muted'>Failed to load report: ${msg}</td></tr>`;
     currentReportItems = [];
+    resetReportDrilldown();
     syncReportsSelectAll();
     log(`Report load failed: ${error.message}`);
   }
@@ -1787,9 +2097,38 @@ async function loadAllSpoofableItems() {
   return Array.isArray(data.items) ? data.items : [];
 }
 
+async function loadAllTargetsItems() {
+  const data = await apiRequest("/targets?limit=0&offset=0", {
+    method: "GET",
+  });
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+async function exportTargetsCsv() {
+  try {
+    const items = await loadAllTargetsItems();
+    if (!items.length) {
+      log("Targets CSV export skipped: no targets available.");
+      return;
+    }
+    // Keep export compatible with bulk import format (no header).
+    const lines = items.map((row) => {
+      const hostname = String(row.hostname || "").trim();
+      const port = Number(row.port || 443);
+      return `${hostname},${port}`;
+    });
+    const filename = `targets_export_${exportTimestamp()}.csv`;
+    downloadTextFile(lines.join("\n"), filename, "text/csv;charset=utf-8");
+    log(`Targets CSV exported (${items.length} rows).`);
+  } catch (error) {
+    log(`Targets CSV export failed: ${error.message}`);
+  }
+}
+
 async function exportSpoofableCsv() {
   try {
-    const items = await loadAllSpoofableItems();
+    const allItems = await loadAllSpoofableItems();
+    const items = applySpoofableFilters(allItems);
     if (!items.length) {
       log("Spoofable CSV export skipped: no data available.");
       return;
@@ -1819,7 +2158,7 @@ async function exportSpoofableCsv() {
 
     const filename = `spoofable_report_${exportTimestamp()}.csv`;
     downloadTextFile(lines.join("\n"), filename, "text/csv;charset=utf-8");
-    log(`Spoofable CSV exported (${items.length} rows).`);
+    log(`Spoofable CSV exported (${items.length} rows, filtered).`);
   } catch (error) {
     log(`Spoofable CSV export failed: ${error.message}`);
   }
@@ -1827,7 +2166,8 @@ async function exportSpoofableCsv() {
 
 async function exportSpoofablePdf() {
   try {
-    const items = await loadAllSpoofableItems();
+    const allItems = await loadAllSpoofableItems();
+    const items = applySpoofableFilters(allItems);
     if (!items.length) {
       log("Spoofable PDF export skipped: no data available.");
       return;
@@ -1901,7 +2241,7 @@ async function exportSpoofablePdf() {
     setTimeout(() => {
       printWindow.print();
     }, 250);
-    log(`Spoofable PDF prepared (${items.length} rows).`);
+    log(`Spoofable PDF prepared (${items.length} rows, filtered).`);
   } catch (error) {
     log(`Spoofable PDF export failed: ${error.message}`);
   }
@@ -1910,25 +2250,28 @@ async function exportSpoofablePdf() {
 async function refreshSpoofable() {
   try {
     pagination.spoofable.pageSize = getPageSize(ui.spoofablePageSize, 10);
-    const limit = pagination.spoofable.pageSize;
-    const offset =
-      limit > 0 ? (pagination.spoofable.page - 1) * limit : 0;
-    const query = new URLSearchParams({
-      limit: String(limit),
-      offset: String(offset),
-    });
-    const data = await apiRequest(`/dns/spoofable?${query.toString()}`, {
+    const data = await apiRequest("/dns/spoofable?limit=0&offset=0", {
       method: "GET",
     });
-    pagination.spoofable.total = data.total ?? 0;
+    const allItems = Array.isArray(data.items) ? data.items : [];
+    const filteredItems = applySpoofableFilters(allItems);
+    pagination.spoofable.total = filteredItems.length;
+    const limit = pagination.spoofable.pageSize;
+    const totalPages =
+      limit > 0 ? Math.max(1, Math.ceil(filteredItems.length / limit)) : 1;
+    pagination.spoofable.page = clamp(pagination.spoofable.page, 1, totalPages);
+    const offset =
+      limit > 0 ? (pagination.spoofable.page - 1) * limit : 0;
+    const pageItems =
+      limit > 0 ? filteredItems.slice(offset, offset + limit) : filteredItems;
     updatePaginationUI("spoofable", {
       prevBtn: ui.spoofablePrevBtn,
       nextBtn: ui.spoofableNextBtn,
       pageInfo: ui.spoofablePageInfo,
     });
-    renderSpoofableList(data.items || []);
+    renderSpoofableList(pageItems);
     log(
-      `Loaded spoofable report (${Array.isArray(data.items) ? data.items.length : 0} targets).`
+      `Loaded spoofable report (${pageItems.length}/${filteredItems.length} filtered targets).`
     );
   } catch (error) {
     ui.spoofableBody.innerHTML =
@@ -1943,10 +2286,14 @@ async function refreshTargets() {
     const limit = pagination.targets.pageSize;
     const offset =
       limit > 0 ? (pagination.targets.page - 1) * limit : 0;
+    const search = String(targetsSearchText || "").trim();
     const query = new URLSearchParams({
       limit: String(limit),
       offset: String(offset),
     });
+    if (search) {
+      query.set("search", search);
+    }
     const data = await apiRequest(`/targets?${query.toString()}`, {
       method: "GET",
     });
@@ -1958,11 +2305,26 @@ async function refreshTargets() {
     });
     renderTargets(data.items || []);
     log(
-      `Loaded ${Array.isArray(data.items) ? data.items.length : 0} targets.`
+      `Loaded ${Array.isArray(data.items) ? data.items.length : 0} targets${search ? ` (search='${search}')` : ""}.`
     );
   } catch (error) {
     log(`Target refresh failed: ${error.message}`);
   }
+}
+
+function applyTargetsSearch() {
+  targetsSearchText = String(ui.targetsSearch?.value || "").trim();
+  pagination.targets.page = 1;
+  refreshTargets();
+}
+
+function clearTargetsSearch() {
+  targetsSearchText = "";
+  if (ui.targetsSearch) {
+    ui.targetsSearch.value = "";
+  }
+  pagination.targets.page = 1;
+  refreshTargets();
 }
 
 async function removeTarget(targetId) {
@@ -1998,7 +2360,14 @@ function closeEditTargetPanel() {
   updateModalBodyLock();
 }
 
-function openEditTargetPanel(targetId, currentHostname, currentPort, currentDnsScope) {
+function openEditTargetPanel(
+  targetId,
+  currentHostname,
+  currentPort,
+  currentDnsScope,
+  currentTlsChecksEnabled,
+  currentDnsChecksEnabled
+) {
   ui.editTargetId.value = String(targetId || "");
   ui.editTargetHostname.value = String(currentHostname || "");
   ui.editTargetPort.value = String(currentPort || 443);
@@ -2006,6 +2375,10 @@ function openEditTargetPanel(targetId, currentHostname, currentPort, currentDnsS
   ui.editTargetDnsScope.value = ["system", "private", "public"].includes(normalizedScope)
     ? normalizedScope
     : "system";
+  ui.editTargetTlsChecksEnabled.checked =
+    String(currentTlsChecksEnabled).toLowerCase() !== "false";
+  ui.editTargetDnsChecksEnabled.checked =
+    String(currentDnsChecksEnabled).toLowerCase() !== "false";
   setEditTargetStatus("");
   ui.editTargetPanel.classList.remove("hidden");
   ui.editTargetHostname.focus();
@@ -2038,18 +2411,26 @@ async function saveTargetEdit(event) {
     setEditTargetStatus("Edit target failed: invalid DNS scope.", "error");
     return;
   }
+  const dnsChecksEnabled = Boolean(ui.editTargetDnsChecksEnabled.checked);
+  const tlsChecksEnabled = Boolean(ui.editTargetTlsChecksEnabled.checked);
 
   setEditTargetStatus("Saving changes...", "");
   try {
     const data = await apiRequest(`/targets/${targetId}`, {
       method: "PUT",
-      body: JSON.stringify({ hostname, port, dns_scope: dnsScope }),
+      body: JSON.stringify({
+        hostname,
+        port,
+        dns_scope: dnsScope,
+        dns_checks_enabled: dnsChecksEnabled,
+        tls_checks_enabled: tlsChecksEnabled,
+      }),
     });
     const queueErrors = Array.isArray(data.queue_errors)
       ? data.queue_errors.filter(Boolean)
       : [];
     log(
-      `Target ${targetId} updated to ${hostname}:${port} (dns_scope=${dnsScope}). Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
+      `Target ${targetId} updated to ${hostname}:${port} (dns_scope=${dnsScope}, tls_checks_enabled=${tlsChecksEnabled}, dns_checks_enabled=${dnsChecksEnabled}). Checks re-run queued (scan=${data.scan_task_id || "-"}, dns=${data.dns_task_id || "-"}).`
     );
     if (queueErrors.length > 0) {
       log(`Target ${targetId} updated, but queue warnings: ${queueErrors.join(" | ")}`);
@@ -2406,6 +2787,108 @@ async function saveDkimConfig(event) {
   }
 }
 
+function renderChecksConfigRows(reportItems) {
+  const items = Array.isArray(reportItems) ? reportItems : [];
+  if (!items.length) {
+    ui.checksConfigTableBody.innerHTML =
+      "<tr><td colspan='4' class='muted'>No check policies available.</td></tr>";
+    return;
+  }
+  ui.checksConfigTableBody.innerHTML = items
+    .map((item) => {
+      const reportId = escapeHtml(String(item.id || ""));
+      const effectiveSeverity = String(item.effective_severity || item.default_severity || "medium").toLowerCase();
+      const severityValue = ["low", "medium", "high"].includes(effectiveSeverity)
+        ? effectiveSeverity
+        : "medium";
+      return `
+      <tr data-check-report-id="${reportId}">
+        <td>${escapeHtml(item.title || reportId)}</td>
+        <td class="tiny-mono">${escapeHtml(item.finding_id || "-")}</td>
+        <td>
+          <input type="checkbox" class="check-enabled-input" ${item.enabled ? "checked" : ""}>
+        </td>
+        <td>
+          <select class="form-select form-select-sm check-severity-select">
+            <option value="low" ${severityValue === "low" ? "selected" : ""}>Low</option>
+            <option value="medium" ${severityValue === "medium" ? "selected" : ""}>Medium</option>
+            <option value="high" ${severityValue === "high" ? "selected" : ""}>High</option>
+          </select>
+        </td>
+      </tr>
+    `;
+    })
+    .join("");
+}
+
+async function loadChecksConfig() {
+  try {
+    const data = await apiRequest("/config/checks", { method: "GET" });
+    const thresholds = data.thresholds || {};
+    ui.checkDkimMinRsaBits.value = String(
+      thresholds.dkim_min_rsa_bits ?? 2048
+    );
+    ui.checkCertExpiryDays.value = String(
+      thresholds.cert_expiry_days ?? 30
+    );
+    ui.checkHstsMinMaxAge.value = String(
+      thresholds.hsts_min_max_age ?? 31536000
+    );
+    renderChecksConfigRows(data.report_items || []);
+    log("Checks configurability loaded.");
+  } catch (error) {
+    if (ui.checksConfigTableBody) {
+      ui.checksConfigTableBody.innerHTML =
+        "<tr><td colspan='4' class='muted'>Checks configuration unavailable.</td></tr>";
+    }
+    log(`Checks configurability load failed: ${error.message}`);
+  }
+}
+
+async function saveChecksConfig(event) {
+  event.preventDefault();
+  const enabledReports = {};
+  const severityOverrides = {};
+  const rows = Array.from(
+    ui.checksConfigTableBody?.querySelectorAll("tr[data-check-report-id]") || []
+  );
+  rows.forEach((row) => {
+    const reportId = String(row.dataset.checkReportId || "");
+    if (!reportId) {
+      return;
+    }
+    const enabledInput = row.querySelector(".check-enabled-input");
+    const severitySelect = row.querySelector(".check-severity-select");
+    enabledReports[reportId] = Boolean(enabledInput?.checked);
+    severityOverrides[reportId] = String(severitySelect?.value || "medium").toLowerCase();
+  });
+
+  const payload = {
+    enabled_reports: enabledReports,
+    severity_overrides: severityOverrides,
+    thresholds: {
+      dkim_min_rsa_bits: Number(ui.checkDkimMinRsaBits.value),
+      cert_expiry_days: Number(ui.checkCertExpiryDays.value),
+      hsts_min_max_age: Number(ui.checkHstsMinMaxAge.value),
+    },
+  };
+
+  try {
+    const data = await apiRequest("/config/checks", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    const thresholds = data.thresholds || {};
+    ui.checkDkimMinRsaBits.value = String(thresholds.dkim_min_rsa_bits ?? 2048);
+    ui.checkCertExpiryDays.value = String(thresholds.cert_expiry_days ?? 30);
+    ui.checkHstsMinMaxAge.value = String(thresholds.hsts_min_max_age ?? 31536000);
+    renderChecksConfigRows(data.report_items || []);
+    log("Checks configurability saved.");
+  } catch (error) {
+    log(`Checks configurability save failed: ${error.message}`);
+  }
+}
+
 function applySchedulerFrequencyVisibility(frequency) {
   const value = String(frequency || "daily").toLowerCase();
   const isInterval = value === "interval";
@@ -2691,6 +3174,7 @@ async function refreshUsers() {
 
 async function createUser(event) {
   event.preventDefault();
+  setUserCreateStatus("");
   const payload = {
     username: ui.userUsername.value.trim(),
     password: ui.userPassword.value,
@@ -2702,38 +3186,52 @@ async function createUser(event) {
   };
 
   if (!payload.username || !payload.password) {
-    log("Create user failed: username and password are required.");
+    const message = "Create user failed: username and password are required.";
+    log(message);
+    setUserCreateStatus(message, "error");
     return;
   }
   if (payload.username.length < 3 || payload.username.length > 64) {
-    log("Create user failed: username must be 3-64 characters.");
+    const message = "Create user failed: username must be 3-64 characters.";
+    log(message);
+    setUserCreateStatus(message, "error");
     return;
   }
   if (/\s/.test(payload.username)) {
-    log("Create user failed: username must not contain whitespace.");
+    const message = "Create user failed: username must not contain whitespace.";
+    log(message);
+    setUserCreateStatus(message, "error");
     return;
   }
   const password = payload.password;
   if (password.length < 10) {
-    log("Create user failed: password must be at least 10 characters.");
+    const message = "Create user failed: password must be at least 10 characters.";
+    log(message);
+    setUserCreateStatus(message, "error");
     return;
   }
   if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
-    log("Create user failed: password must include upper, lower, and digit.");
+    const message = "Create user failed: password must include upper, lower, and digit.";
+    log(message);
+    setUserCreateStatus(message, "error");
     return;
   }
 
   try {
+    setUserCreateStatus("Creating user...", "");
     await apiRequest("/admin/users", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     log(`User created: ${payload.username}`);
+    setUserCreateStatus(`User created: ${payload.username}`, "success");
     ui.userForm.reset();
     ui.userRoleStandard.checked = true;
     await refreshUsers();
   } catch (error) {
-    log(`Create user failed: ${error.message}`);
+    const message = `Create user failed: ${error.message}`;
+    log(message);
+    setUserCreateStatus(message, "error");
   }
 }
 
@@ -2823,11 +3321,32 @@ async function importTargetsCsv(event) {
   }
 }
 
+function downloadTargetsCsvTemplate() {
+  const template = [
+    "example.com,443",
+    "mail.example.com,443",
+    "api.example.com,8443",
+    "domain-only.example.net",
+  ].join("\n");
+  const blob = new Blob([template], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "targets-template.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  log("Downloaded CSV template: targets-template.csv");
+}
+
 async function addTarget(event) {
   event.preventDefault();
   const hostname = ui.hostname.value.trim();
   const port = Number(ui.port.value);
   const dnsScope = String(ui.dnsScope.value || "system").trim().toLowerCase();
+  const dnsChecksEnabled = Boolean(ui.checksDnsEnabled.checked);
+  const tlsChecksEnabled = Boolean(ui.checksTlsEnabled.checked);
   if (!["system", "private", "public"].includes(dnsScope)) {
     log("Add target failed: invalid DNS scope.");
     return;
@@ -2836,14 +3355,20 @@ async function addTarget(event) {
     hostname,
     port: String(port),
     dns_scope: dnsScope,
+    dns_checks_enabled: String(dnsChecksEnabled),
+    tls_checks_enabled: String(tlsChecksEnabled),
   });
 
   try {
     await apiRequest(`/targets?${query.toString()}`, { method: "POST" });
-    log(`Target added: ${hostname}:${port} (dns_scope=${dnsScope})`);
+    log(
+      `Target added: ${hostname}:${port} (dns_scope=${dnsScope}, tls_checks_enabled=${tlsChecksEnabled}, dns_checks_enabled=${dnsChecksEnabled})`
+    );
     ui.targetForm.reset();
     ui.port.value = "443";
     ui.dnsScope.value = "system";
+    ui.checksTlsEnabled.checked = true;
+    ui.checksDnsEnabled.checked = true;
     await refreshTargets();
     await loadDashboard();
   } catch (error) {
@@ -2866,6 +3391,7 @@ async function refreshAll() {
     tasks.push(["proxy", loadProxyConfig]);
     tasks.push(["scheduler", loadSchedulerConfig]);
     tasks.push(["smtp", loadSmtpConfig]);
+    tasks.push(["checks", loadChecksConfig]);
   }
   const results = await Promise.allSettled(
     tasks.map(([, fn]) => fn())
@@ -2879,7 +3405,16 @@ async function refreshAll() {
 }
 
 ui.targetForm.addEventListener("submit", addTarget);
+ui.exportTargetsCsvBtn.addEventListener("click", exportTargetsCsv);
 ui.refreshTargetsBtn.addEventListener("click", refreshTargets);
+ui.targetsSearchBtn.addEventListener("click", applyTargetsSearch);
+ui.targetsClearSearchBtn.addEventListener("click", clearTargetsSearch);
+ui.targetsSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyTargetsSearch();
+  }
+});
 ui.refreshSpoofableBtn.addEventListener("click", refreshSpoofable);
 ui.exportSpoofableCsvBtn.addEventListener("click", exportSpoofableCsv);
 ui.exportSpoofablePdfBtn.addEventListener("click", exportSpoofablePdf);
@@ -2917,6 +3452,8 @@ ui.smtpForm.addEventListener("submit", saveSmtpConfig);
 ui.reloadSmtpBtn.addEventListener("click", loadSmtpConfig);
 ui.dkimForm.addEventListener("submit", saveDkimConfig);
 ui.reloadDkimBtn.addEventListener("click", loadDkimConfig);
+ui.checksConfigForm.addEventListener("submit", saveChecksConfig);
+ui.reloadChecksConfigBtn.addEventListener("click", loadChecksConfig);
 ui.smtpUseAuth.addEventListener("change", () => {
   applySmtpAuthVisibility(ui.smtpUseAuth.checked);
 });
@@ -2935,6 +3472,7 @@ ui.editTargetPanel.addEventListener("click", (event) => {
 });
 ui.refreshUsersBtn.addEventListener("click", refreshUsers);
 ui.bulkTargetsForm.addEventListener("submit", importTargetsCsv);
+ui.downloadTargetsTemplateBtn.addEventListener("click", downloadTargetsCsvTemplate);
 ui.refreshEventLogBtn.addEventListener("click", refreshEventLogs);
 ui.adminNavItems.forEach((item) => {
   item.addEventListener("click", () => {
@@ -2978,6 +3516,14 @@ ui.jobsPageSize.addEventListener("change", () => {
   refreshJobs();
 });
 ui.spoofablePageSize.addEventListener("change", () => {
+  pagination.spoofable.page = 1;
+  refreshSpoofable();
+});
+ui.spoofableDmarcFilter.addEventListener("change", () => {
+  pagination.spoofable.page = 1;
+  refreshSpoofable();
+});
+ui.spoofableResultFilter.addEventListener("change", () => {
   pagination.spoofable.page = 1;
   refreshSpoofable();
 });
@@ -3042,6 +3588,25 @@ ui.reportsBody.addEventListener("change", (event) => {
   }
   syncReportsSelectAll();
 });
+ui.reportsBody.addEventListener("click", (event) => {
+  if (event.target.closest(".report-row-select")) {
+    return;
+  }
+  const rowEl = event.target.closest("tr[data-report-row-key]");
+  if (!rowEl) {
+    return;
+  }
+  const rowKey = String(rowEl.dataset.reportRowKey || "");
+  const row = currentReportItems.find(
+    (item, index) => reportRowKey(item, index) === rowKey
+  );
+  if (!row) {
+    return;
+  }
+  selectedReportRowKey = rowKey;
+  renderReportRows(currentReportItems);
+  renderReportDrilldown(row);
+});
 ui.reportsSelectAll.addEventListener("change", () => {
   const shouldSelect = Boolean(ui.reportsSelectAll.checked);
   currentReportItems.forEach((row) => {
@@ -3074,6 +3639,7 @@ ui.reportTypeSelect.addEventListener("change", () => {
   selectedReportTargetIds.clear();
   currentReportItems = [];
   currentReportId = String(ui.reportTypeSelect.value || "");
+  resetReportDrilldown();
   syncReportsSelectAll();
   if (ui.reportsBody) {
     ui.reportsBody.innerHTML =
@@ -3088,7 +3654,9 @@ ui.targetsBody.addEventListener("click", (event) => {
       editBtn.dataset.targetId,
       editBtn.dataset.hostname,
       editBtn.dataset.port,
-      editBtn.dataset.dnsScope
+      editBtn.dataset.dnsScope,
+      editBtn.dataset.tlsChecksEnabled,
+      editBtn.dataset.dnsChecksEnabled
     );
     return;
   }

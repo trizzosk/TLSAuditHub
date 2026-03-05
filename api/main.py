@@ -52,6 +52,12 @@ OIDC_STATE_TTL_SECONDS = 300
 AUTH_METHODS = ("local", "oidc", "ldap")
 DNS_SCOPE_VALUES = ("system", "private", "public")
 DEFAULT_AUTH_METHOD = "local"
+CHECK_SEVERITY_VALUES = ("low", "medium", "high")
+CHECK_THRESHOLD_KEYS = (
+    "dkim_min_rsa_bits",
+    "cert_expiry_days",
+    "hsts_min_max_age",
+)
 
 OIDC_ISSUER_URL_DEFAULT = (os.environ.get("OIDC_ISSUER_URL") or "").strip()
 OIDC_CLIENT_ID_DEFAULT = (os.environ.get("OIDC_CLIENT_ID") or "").strip()
@@ -159,6 +165,8 @@ class TargetUpdate(BaseModel):
     hostname: str
     port: int = 443
     dns_scope: str = "system"
+    dns_checks_enabled: bool = True
+    tls_checks_enabled: bool = True
 
 
 class AuthConfigUpdate(BaseModel):
@@ -180,6 +188,12 @@ class AuthConfigUpdate(BaseModel):
     ldap_bind_password: str = ""
     ldap_user_base_dn: str = ""
     ldap_user_filter: str = "(uid={username})"
+
+
+class ChecksConfigUpdate(BaseModel):
+    enabled_reports: dict[str, bool] = Field(default_factory=dict)
+    severity_overrides: dict[str, str] = Field(default_factory=dict)
+    thresholds: dict[str, int] = Field(default_factory=dict)
 
 
 REPORT_DEFINITIONS = {
@@ -231,13 +245,65 @@ REPORT_DEFINITIONS = {
         ),
         "severity": "high",
     },
+    "weak_dkim_keys": {
+        "id": "weak_dkim_keys",
+        "finding_id": "WEAK_DKIM_RSA_KEY",
+        "title": "Hosts With Weak DKIM RSA Keys",
+        "description": (
+            "Targets where discovered DKIM records contain RSA public keys "
+            "with estimated size below 2048 bits."
+        ),
+        "severity": "high",
+    },
+    "hosted_in_m365": {
+        "id": "hosted_in_m365",
+        "finding_id": "HOSTED_IN_M365",
+        "title": "Hosts Detected As Microsoft 365-Hosted",
+        "description": (
+            "Targets with DNS signals indicating an assigned Microsoft 365 tenant "
+            "and active M365 mail service usage (for example Exchange Online MX, "
+            "M365 SPF includes, and Outlook autodiscover CNAME)."
+        ),
+        "severity": "low",
+    },
+    "ct_revocation_gaps": {
+        "id": "ct_revocation_gaps",
+        "finding_id": "CT_OR_REVOCATION_GAPS",
+        "title": "Hosts With CT/Revocation Gaps",
+        "description": (
+            "Targets with missing CT embedded SCT evidence, poor/missing OCSP "
+            "stapling, unreachable OCSP/CRL endpoints, or non-good revocation status."
+        ),
+        "severity": "high",
+    },
+    "ca_issuers_used": {
+        "id": "ca_issuers_used",
+        "finding_id": "CERT_ISSUER_IN_USE",
+        "title": "Certificate Issuers In Use",
+        "description": (
+            "Inventory of certificate issuer (Issued by) values discovered from "
+            "latest TLS certificate scans."
+        ),
+        "severity": "low",
+    },
+    "wildcard_certs_in_use": {
+        "id": "wildcard_certs_in_use",
+        "finding_id": "WILDCARD_CERT_IN_USE",
+        "title": "Wildcard Certificates In Use",
+        "description": (
+            "Targets whose latest TLS certificate contains wildcard names "
+            "in SAN/CN."
+        ),
+        "severity": "medium",
+    },
     "https_posture_issues": {
         "id": "https_posture_issues",
         "finding_id": "HTTPS_POSTURE_ISSUES",
         "title": "Hosts With HTTPS Posture Issues",
         "description": (
             "Targets with weak/missing HSTS, HTTP to HTTPS redirect gaps, "
-            "or certificates near expiry."
+            "certificates near expiry, SAN/CN hostname mismatches, "
+            "or wildcard certificate usage."
         ),
         "severity": "medium",
     },
@@ -527,6 +593,157 @@ def _normalize_dkim_selector_text(value: str) -> list[str]:
     return selectors
 
 
+def _env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int(str(raw).strip()) if raw not in (None, "") else int(default)
+    except Exception:
+        value = int(default)
+    if minimum is not None and value < minimum:
+        value = minimum
+    if maximum is not None and value > maximum:
+        value = maximum
+    return value
+
+
+def _default_checks_thresholds() -> dict:
+    return {
+        "dkim_min_rsa_bits": _env_int("CHECK_DKIM_MIN_RSA_BITS", 2048, minimum=512, maximum=16384),
+        "cert_expiry_days": _env_int("CHECK_CERT_EXPIRY_DAYS", 30, minimum=1, maximum=3650),
+        "hsts_min_max_age": _env_int("CHECK_HSTS_MIN_MAX_AGE", 31536000, minimum=0, maximum=63072000),
+    }
+
+
+def _default_enabled_reports() -> dict:
+    return {report_id: True for report_id in REPORT_DEFINITIONS.keys()}
+
+
+def _normalize_checks_enabled_reports(raw: dict | None) -> dict:
+    out = {}
+    source = raw if isinstance(raw, dict) else {}
+    for report_id in REPORT_DEFINITIONS.keys():
+        value = source.get(report_id)
+        out[report_id] = True if value is None else bool(value)
+    return out
+
+
+def _normalize_checks_severity_overrides(raw: dict | None) -> dict:
+    out = {}
+    source = raw if isinstance(raw, dict) else {}
+    for report_id in REPORT_DEFINITIONS.keys():
+        value = str(source.get(report_id) or "").strip().lower()
+        if value in CHECK_SEVERITY_VALUES:
+            out[report_id] = value
+    return out
+
+
+def _normalize_checks_thresholds(raw: dict | None) -> dict:
+    source = raw if isinstance(raw, dict) else {}
+    defaults = _default_checks_thresholds()
+    out = dict(defaults)
+    for key in CHECK_THRESHOLD_KEYS:
+        if key not in source:
+            continue
+        try:
+            parsed = int(source.get(key))
+        except Exception:
+            continue
+        out[key] = parsed
+    # Clamp to safe ranges.
+    out["dkim_min_rsa_bits"] = max(512, min(16384, int(out["dkim_min_rsa_bits"])))
+    out["cert_expiry_days"] = max(1, min(3650, int(out["cert_expiry_days"])))
+    out["hsts_min_max_age"] = max(0, min(63072000, int(out["hsts_min_max_age"])))
+    return out
+
+
+def ensure_checks_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS checks_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                enabled_reports_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                severity_overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                thresholds_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT checks_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO checks_config (id, enabled_reports_json, severity_overrides_json, thresholds_json)
+            VALUES (1, :enabled_reports, :severity_overrides, :thresholds)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {
+            "enabled_reports": json.dumps(_default_enabled_reports()),
+            "severity_overrides": json.dumps({}),
+            "thresholds": json.dumps(_default_checks_thresholds()),
+        },
+    )
+    db.commit()
+
+
+def read_checks_config(db):
+    ensure_checks_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT enabled_reports_json, severity_overrides_json, thresholds_json, updated_at
+            FROM checks_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="checks config unavailable")
+    raw_enabled = row._mapping.get("enabled_reports_json") or {}
+    raw_severity = row._mapping.get("severity_overrides_json") or {}
+    raw_thresholds = row._mapping.get("thresholds_json") or {}
+    enabled_reports = _normalize_checks_enabled_reports(raw_enabled)
+    severity_overrides = _normalize_checks_severity_overrides(raw_severity)
+    thresholds = _normalize_checks_thresholds(raw_thresholds)
+    report_items = []
+    for report_id, report in REPORT_DEFINITIONS.items():
+        report_items.append(
+            {
+                "id": report_id,
+                "title": report["title"],
+                "finding_id": report["finding_id"],
+                "default_severity": report["severity"],
+                "enabled": bool(enabled_reports.get(report_id, True)),
+                "effective_severity": severity_overrides.get(report_id) or report["severity"],
+            }
+        )
+    return {
+        "enabled_reports": enabled_reports,
+        "severity_overrides": severity_overrides,
+        "thresholds": thresholds,
+        "report_items": report_items,
+        "updated_at": row._mapping.get("updated_at"),
+    }
+
+
+def _is_report_enabled(checks_cfg: dict, report_id: str) -> bool:
+    enabled = (checks_cfg or {}).get("enabled_reports") or {}
+    return bool(enabled.get(report_id, True))
+
+
+def _effective_report_severity(checks_cfg: dict, report_id: str, fallback: str) -> str:
+    overrides = (checks_cfg or {}).get("severity_overrides") or {}
+    value = str(overrides.get(report_id) or "").strip().lower()
+    if value in CHECK_SEVERITY_VALUES:
+        return value
+    default_value = str(fallback or "").strip().lower()
+    if default_value in CHECK_SEVERITY_VALUES:
+        return default_value
+    return "medium"
+
+
 def ensure_dkim_config_table(db):
     db.execute(
         text(
@@ -718,6 +935,44 @@ def ensure_targets_dns_scope_column(db):
             ALTER TABLE targets
             ADD CONSTRAINT targets_dns_scope_check
             CHECK (dns_scope IN ('system', 'private', 'public'))
+            """
+        )
+    )
+    db.commit()
+
+
+def ensure_targets_check_columns(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS dns_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS tls_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET dns_checks_enabled=TRUE
+            WHERE dns_checks_enabled IS NULL
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET tls_checks_enabled=TRUE
+            WHERE tls_checks_enabled IS NULL
             """
         )
     )
@@ -1387,9 +1642,11 @@ def init_proxy_config():
         ensure_scheduler_config_table(db)
         ensure_smtp_config_table(db)
         ensure_dkim_config_table(db)
+        ensure_checks_config_table(db)
         ensure_auth_config_table(db)
         ensure_target_dns_table(db)
         ensure_targets_dns_scope_column(db)
+        ensure_targets_check_columns(db)
         ensure_scans_error_message_column(db)
         ensure_users_table(db)
         ensure_event_logs_table(db)
@@ -1584,22 +1841,32 @@ def add_target(
     hostname: str,
     port: int = 443,
     dns_scope: str = "system",
+    dns_checks_enabled: bool = True,
+    tls_checks_enabled: bool = True,
     user=Depends(get_current_user),
 ):
     normalized_dns_scope = _normalize_dns_scope(dns_scope)
-    _validate_hostname_resolves(hostname, port, normalized_dns_scope)
+    if bool(tls_checks_enabled):
+        _validate_hostname_resolves(hostname, port, normalized_dns_scope)
     db = SessionLocal()
     try:
         ensure_targets_dns_scope_column(db)
+        ensure_targets_check_columns(db)
         row = db.execute(
             text(
                 """
-                INSERT INTO targets (hostname, port, dns_scope)
-                VALUES (:h, :p, :dns_scope)
+                INSERT INTO targets (hostname, port, dns_scope, dns_checks_enabled, tls_checks_enabled)
+                VALUES (:h, :p, :dns_scope, :dns_checks_enabled, :tls_checks_enabled)
                 RETURNING id
                 """
             ),
-            {"h": hostname, "p": port, "dns_scope": normalized_dns_scope},
+            {
+                "h": hostname,
+                "p": port,
+                "dns_scope": normalized_dns_scope,
+                "dns_checks_enabled": bool(dns_checks_enabled),
+                "tls_checks_enabled": bool(tls_checks_enabled),
+            },
         ).fetchone()
         db.commit()
         target_id = row._mapping["id"] if row else None
@@ -1608,35 +1875,60 @@ def add_target(
                 "worker.run_dns_lookup",
                 args=[str(target_id)],
             )
-        return {"status": "added", "target_id": target_id}
+        return {
+            "status": "added",
+            "target_id": target_id,
+            "dns_checks_enabled": bool(dns_checks_enabled),
+            "tls_checks_enabled": bool(tls_checks_enabled),
+        }
     finally:
         db.close()
 
 
 @app.get("/targets")
 def list_targets(
-    limit: int = 0, offset: int = 0, user=Depends(get_current_user)
+    limit: int = 0,
+    offset: int = 0,
+    search: str = "",
+    user=Depends(get_current_user),
 ):
     db = SessionLocal()
     try:
         ensure_targets_dns_scope_column(db)
+        ensure_targets_check_columns(db)
+        search_text = str(search or "").strip().lower()
+        params = {}
+        if search_text:
+            where_clause = "WHERE lower(hostname) LIKE :search"
+            params["search"] = f"%{search_text}%"
+        else:
+            where_clause = ""
+
         total_row = db.execute(
-            text("SELECT COUNT(*) AS total FROM targets")
+            text(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM targets
+                {where_clause}
+                """
+            ),
+            params,
         ).fetchone()
         total = int(total_row._mapping["total"]) if total_row else 0
 
         if limit and limit > 0:
             limit_clause = "LIMIT :limit OFFSET :offset"
-            params = {"limit": limit, "offset": offset}
+            params["limit"] = limit
+            params["offset"] = offset
         else:
             limit_clause = ""
-            params = {}
 
         rows = db.execute(
             text(
                 f"""
-                SELECT id, hostname, port, enabled, scan_interval_minutes, dns_scope
+                SELECT id, hostname, port, enabled, scan_interval_minutes, dns_scope, dns_checks_enabled, tls_checks_enabled
                 FROM targets
+                {where_clause}
                 ORDER BY hostname ASC, port ASC
                 {limit_clause}
                 """
@@ -1657,6 +1949,18 @@ def get_target_dns(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
         ensure_target_dns_table(db)
+        target_row = db.execute(
+            text(
+                """
+                SELECT hostname
+                FROM targets
+                WHERE id=:tid
+                """
+            ),
+            {"tid": target_id},
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(status_code=404, detail="Target not found")
         row = db.execute(
             text(
                 """
@@ -1688,6 +1992,8 @@ def update_target(
 ):
     hostname = (payload.hostname or "").strip()
     dns_scope = _normalize_dns_scope(payload.dns_scope)
+    dns_checks_enabled = bool(payload.dns_checks_enabled)
+    tls_checks_enabled = bool(payload.tls_checks_enabled)
     if not hostname:
         raise HTTPException(status_code=400, detail="hostname is required")
 
@@ -1696,11 +2002,13 @@ def update_target(
         raise HTTPException(
             status_code=400, detail="port must be in range 1-65535"
         )
-    _validate_hostname_resolves(hostname, port, dns_scope)
+    if tls_checks_enabled:
+        _validate_hostname_resolves(hostname, port, dns_scope)
 
     db = SessionLocal()
     try:
         ensure_targets_dns_scope_column(db)
+        ensure_targets_check_columns(db)
         target = db.execute(
             text("SELECT id FROM targets WHERE id=:tid"),
             {"tid": target_id},
@@ -1712,7 +2020,11 @@ def update_target(
             text(
                 """
                 UPDATE targets
-                SET hostname=:hostname, port=:port, dns_scope=:dns_scope
+                SET hostname=:hostname,
+                    port=:port,
+                    dns_scope=:dns_scope,
+                    dns_checks_enabled=:dns_checks_enabled,
+                    tls_checks_enabled=:tls_checks_enabled
                 WHERE id=:tid
                 """
             ),
@@ -1720,6 +2032,8 @@ def update_target(
                 "hostname": hostname,
                 "port": port,
                 "dns_scope": dns_scope,
+                "dns_checks_enabled": dns_checks_enabled,
+                "tls_checks_enabled": tls_checks_enabled,
                 "tid": target_id,
             },
         )
@@ -1742,13 +2056,14 @@ def update_target(
         except Exception as exc:
             queue_errors.append(f"dns: {exc}")
 
-        try:
-            scan_task = celery_client.send_task(
-                "worker.run_scan", args=[str(target_id)]
-            )
-            scan_task_id = scan_task.id
-        except Exception as exc:
-            queue_errors.append(f"scan: {exc}")
+        if tls_checks_enabled:
+            try:
+                scan_task = celery_client.send_task(
+                    "worker.run_scan", args=[str(target_id)]
+                )
+                scan_task_id = scan_task.id
+            except Exception as exc:
+                queue_errors.append(f"scan: {exc}")
 
         return {
             "status": "updated",
@@ -1756,6 +2071,8 @@ def update_target(
             "hostname": hostname,
             "port": port,
             "dns_scope": dns_scope,
+            "dns_checks_enabled": dns_checks_enabled,
+            "tls_checks_enabled": tls_checks_enabled,
             "dns_task_id": dns_task_id,
             "scan_task_id": scan_task_id,
             "queue_errors": queue_errors,
@@ -1771,8 +2088,16 @@ def list_spoofable_targets(
     db = SessionLocal()
     try:
         ensure_target_dns_table(db)
+        ensure_targets_check_columns(db)
         total_row = db.execute(
-            text("SELECT COUNT(*) AS total FROM targets")
+            text(
+                """
+                SELECT COUNT(*) AS total
+                FROM targets
+                WHERE enabled = true
+                  AND dns_checks_enabled = true
+                """
+            )
         ).fetchone()
         total = int(total_row._mapping["total"]) if total_row else 0
 
@@ -1789,6 +2114,8 @@ def list_spoofable_targets(
                 SELECT t.id, t.hostname, d.data
                 FROM targets t
                 LEFT JOIN target_dns d ON d.target_id = t.id
+                WHERE t.enabled = true
+                  AND t.dns_checks_enabled = true
                 ORDER BY t.hostname ASC
                 {limit_clause}
                 """
@@ -1846,13 +2173,19 @@ def remove_target(target_id: UUID, user=Depends(get_current_user)):
 def run_target_scan(target_id: UUID, user=Depends(get_current_user)):
     db = SessionLocal()
     try:
+        ensure_targets_check_columns(db)
         target = db.execute(
-            text("SELECT id FROM targets WHERE id=:tid"),
+            text("SELECT id, tls_checks_enabled FROM targets WHERE id=:tid"),
             {"tid": target_id},
         ).fetchone()
 
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
+        if not bool(target._mapping.get("tls_checks_enabled")):
+            raise HTTPException(
+                status_code=400,
+                detail="TLS checks are disabled for this target.",
+            )
 
         task = celery_client.send_task("worker.run_scan", args=[str(target_id)])
         return {
@@ -2145,6 +2478,7 @@ async def import_targets_csv(
 
     db = SessionLocal()
     try:
+        ensure_targets_check_columns(db)
         existing_rows = db.execute(
             text("SELECT hostname, port FROM targets")
         ).fetchall()
@@ -2171,8 +2505,8 @@ async def import_targets_csv(
             row = db.execute(
                 text(
                     """
-                    INSERT INTO targets (hostname, port)
-                    VALUES (:h, :p)
+                    INSERT INTO targets (hostname, port, dns_checks_enabled, tls_checks_enabled)
+                    VALUES (:h, :p, TRUE, TRUE)
                     RETURNING id
                     """
                 ),
@@ -2234,9 +2568,30 @@ def delete_user(user_id: UUID, user=Depends(get_current_admin)):
 def dashboard_summary(user=Depends(get_current_user)):
     db = SessionLocal()
     try:
+        ensure_targets_check_columns(db)
         counts = db.execute(
             text(
                 """
+                WITH mail AS (
+                  SELECT
+                    t.id,
+                    COALESCE(d.data, '{}'::jsonb) AS data
+                  FROM targets t
+                  LEFT JOIN target_dns d ON d.target_id = t.id
+                  WHERE t.enabled = true
+                    AND t.dns_checks_enabled = true
+                ),
+                mail_norm AS (
+                  SELECT
+                    id,
+                    lower(trim(COALESCE(data->>'spf', ''))) AS spf,
+                    lower(trim(COALESCE(data->'dmarc'->>'policy', ''))) AS dmarc_policy,
+                    COALESCE(jsonb_array_length(COALESCE(data->'dkim'->'records', '[]'::jsonb)), 0) AS dkim_records_count,
+                    COALESCE(jsonb_array_length(COALESCE(data->'mx', '[]'::jsonb)), 0) > 0 AS has_mx,
+                    COALESCE(jsonb_array_length(COALESCE(data->'a', '[]'::jsonb)), 0) > 0 AS has_a,
+                    COALESCE(jsonb_array_length(COALESCE(data->'aaaa', '[]'::jsonb)), 0) > 0 AS has_aaaa
+                  FROM mail
+                )
                 SELECT
                   (SELECT COUNT(*) FROM targets) AS targets_total,
                   (SELECT COUNT(*) FROM targets WHERE enabled=true) AS targets_enabled,
@@ -2244,7 +2599,18 @@ def dashboard_summary(user=Depends(get_current_user)):
                   (SELECT COUNT(*) FROM scans WHERE status='running') AS scans_running,
                   (SELECT COUNT(*) FROM scan_results) AS results_total,
                   (SELECT COUNT(*) FROM scan_diffs) AS diffs_total,
-                  (SELECT MAX(finished_at) FROM scans) AS last_scan_finished_at
+                  (SELECT MAX(finished_at) FROM scans) AS last_scan_finished_at,
+                  (SELECT COUNT(*) FROM mail_norm) AS mail_targets_total,
+                  (SELECT COUNT(*) FROM mail_norm WHERE spf LIKE '%-all') AS mail_spf_strict,
+                  (SELECT COUNT(*) FROM mail_norm WHERE dmarc_policy IN ('reject', 'quarantine')) AS mail_dmarc_enforced,
+                  (SELECT COUNT(*) FROM mail_norm WHERE dkim_records_count > 0) AS mail_dkim_present,
+                  (
+                    SELECT COUNT(*)
+                    FROM mail_norm
+                    WHERE (NOT (spf LIKE '%-all'))
+                      AND dmarc_policy IN ('', 'none')
+                      AND (has_mx OR has_a OR has_aaaa)
+                  ) AS mail_spoofable
                 """
             )
         ).fetchone()
@@ -2685,6 +3051,48 @@ def update_dkim_config(
         db.close()
 
 
+@app.get("/config/checks")
+def get_checks_config(user=Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        return read_checks_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/checks")
+def update_checks_config(
+    payload: ChecksConfigUpdate, user=Depends(get_current_admin)
+):
+    enabled_reports = _normalize_checks_enabled_reports(payload.enabled_reports)
+    severity_overrides = _normalize_checks_severity_overrides(payload.severity_overrides)
+    thresholds = _normalize_checks_thresholds(payload.thresholds)
+    db = SessionLocal()
+    try:
+        ensure_checks_config_table(db)
+        db.execute(
+            text(
+                """
+                UPDATE checks_config
+                SET enabled_reports_json=:enabled_reports_json,
+                    severity_overrides_json=:severity_overrides_json,
+                    thresholds_json=:thresholds_json,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {
+                "enabled_reports_json": json.dumps(enabled_reports),
+                "severity_overrides_json": json.dumps(severity_overrides),
+                "thresholds_json": json.dumps(thresholds),
+            },
+        )
+        db.commit()
+        return read_checks_config(db)
+    finally:
+        db.close()
+
+
 def _purge_jobs_data(db):
     results_row = db.execute(
         text("SELECT COUNT(*) AS c FROM scan_results")
@@ -2726,6 +3134,7 @@ def _latest_completed_scans(db):
             JOIN targets t ON t.id = s.target_id
             WHERE s.status IN ('completed', 'done')
               AND t.enabled = true
+              AND t.tls_checks_enabled = true
             ORDER BY
               s.target_id,
               s.finished_at DESC NULLS LAST,
@@ -2775,14 +3184,14 @@ def _coerce_support_flag(value):
     return False
 
 
-def _extract_hsts_issues(headers: dict) -> list[str]:
+def _extract_hsts_issues(headers: dict, min_max_age: int = 31536000) -> list[str]:
     issues = []
     hsts = (headers or {}).get("strict_transport_security") or {}
     if not hsts:
         return ["hsts missing"]
     max_age = int(hsts.get("max_age") or 0)
-    if max_age < 31536000:
-        issues.append(f"hsts max-age too low ({max_age})")
+    if max_age < int(min_max_age):
+        issues.append(f"hsts max-age too low ({max_age}; expected>={int(min_max_age)})")
     if not bool(hsts.get("include_subdomains")):
         issues.append("hsts includeSubDomains missing")
     if not bool(hsts.get("preload")):
@@ -2841,6 +3250,94 @@ def _extract_cert_near_expiry_issue(cert_info: dict, days: int = 30) -> str:
     if remaining_days <= days:
         return f"certificate expires soon ({remaining_days} days)"
     return ""
+
+
+def _normalize_dns_name(value: str) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _extract_leaf_cn(cert_info: dict) -> str:
+    certs = (cert_info or {}).get("certificate_chain") or []
+    if not certs:
+        return ""
+    subject = str((certs[0] or {}).get("subject") or "")
+    if not subject:
+        return ""
+    match = re.search(r"(?:^|,)CN=([^,]+)", subject, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return _normalize_dns_name(match.group(1))
+
+
+def _extract_leaf_san_dns(cert_info: dict) -> list[str]:
+    certs = (cert_info or {}).get("certificate_chain") or []
+    if not certs:
+        return []
+    sans = (certs[0] or {}).get("subject_alternative_name") or []
+    if not isinstance(sans, list):
+        return []
+    out = []
+    seen = set()
+    for item in sans:
+        name = _normalize_dns_name(str(item or ""))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _dns_name_matches_host(pattern: str, hostname: str) -> bool:
+    pat = _normalize_dns_name(pattern)
+    host = _normalize_dns_name(hostname)
+    if not pat or not host:
+        return False
+    if "*" not in pat:
+        return pat == host
+    # RFC-style wildcard: only single wildcard label at left-most position.
+    if not pat.startswith("*.") or pat.count("*") != 1:
+        return False
+    suffix = pat[2:]
+    if not suffix or not host.endswith("." + suffix):
+        return False
+    host_labels = host.split(".")
+    suffix_labels = suffix.split(".")
+    return len(host_labels) == len(suffix_labels) + 1
+
+
+def _extract_cert_name_issues(hostname: str, cert_info: dict) -> list[str]:
+    host = _normalize_dns_name(hostname)
+    if not host:
+        return ["certificate hostname validation unavailable (empty hostname)"]
+    try:
+        ipaddress.ip_address(host)
+        # Current certificate payload stores DNS SAN only; skip IP match checks.
+        return []
+    except ValueError:
+        pass
+
+    san_names = _extract_leaf_san_dns(cert_info)
+    cn_name = _extract_leaf_cn(cert_info)
+    candidate_names = san_names if san_names else ([cn_name] if cn_name else [])
+    issues = []
+    if not candidate_names:
+        issues.append("certificate SAN/CN unavailable for hostname validation")
+        return issues
+    if not any(_dns_name_matches_host(name, host) for name in candidate_names):
+        shown = ", ".join(candidate_names[:5]) if candidate_names else "(none)"
+        if len(candidate_names) > 5:
+            shown += f", ... +{len(candidate_names) - 5} more"
+        issues.append(
+            f"certificate SAN/CN mismatch for {host} (present: {shown})"
+        )
+
+    wildcard_names = [name for name in candidate_names if "*" in name]
+    if wildcard_names:
+        shown = ", ".join(wildcard_names[:5])
+        if len(wildcard_names) > 5:
+            shown += f", ... +{len(wildcard_names) - 5} more"
+        issues.append(f"wildcard certificate in use ({shown})")
+    return issues
 
 
 def _looks_weak_cipher_name(cipher_name: str) -> bool:
@@ -2961,6 +3458,7 @@ def _build_spf_not_strict_items(db):
               LIMIT 1
             ) latest ON TRUE
             WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
             ORDER BY t.hostname ASC, t.port ASC
             """
         )
@@ -3045,6 +3543,7 @@ def _build_missing_dmarc_policy_items(db):
               LIMIT 1
             ) latest ON TRUE
             WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
             ORDER BY t.hostname ASC, t.port ASC
             """
         )
@@ -3079,7 +3578,293 @@ def _build_missing_dmarc_policy_items(db):
     return items
 
 
-def _build_https_posture_issue_items(db):
+def _build_weak_dkim_keys_items(db, checks_cfg=None):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status IN ('completed', 'done')
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["weak_dkim_keys"]
+    thresholds = (checks_cfg or {}).get("thresholds") or {}
+    min_bits = int(thresholds.get("dkim_min_rsa_bits") or 2048)
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        dkim = dns_data.get("dkim") or {}
+        dkim_records = dkim.get("records") or []
+        if not isinstance(dkim_records, list):
+            continue
+        weak_entries = []
+        for entry in dkim_records:
+            if not isinstance(entry, dict):
+                continue
+            key_type = str(entry.get("key_type") or "rsa").strip().lower()
+            try:
+                key_bits = int(entry.get("public_key_size_hint_bits") or 0)
+            except Exception:
+                key_bits = 0
+            weak_hint = bool(entry.get("weak_key_hint"))
+            if key_type != "rsa":
+                continue
+            if not weak_hint and key_bits >= min_bits:
+                continue
+            if key_bits <= 0:
+                continue
+            weak_entries.append(
+                f"{entry.get('fqdn') or '-'} ({key_type},{key_bits}b)"
+            )
+        if not weak_entries:
+            continue
+        proof = (
+            f"weak DKIM RSA keys detected (<{min_bits} bits): "
+            + "; ".join(weak_entries[:8])
+        )
+        if len(weak_entries) > 8:
+            proof += f"; ... +{len(weak_entries) - 8} more"
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
+def _build_hosted_in_m365_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status IN ('completed', 'done')
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["hosted_in_m365"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        m365 = dns_data.get("m365") or {}
+        hosted = bool(m365.get("hosted"))
+        if not hosted:
+            continue
+        tenant_assigned = bool(m365.get("tenant_assigned"))
+        service_usage = bool(m365.get("service_usage"))
+        confidence = str(m365.get("confidence") or "unknown")
+        score = int(m365.get("score") or 0)
+        signals = m365.get("signals") or []
+        tenant_hints = m365.get("tenant_hints") or []
+        ms_tokens = m365.get("ms_verification_tokens") or []
+        proof_parts = [
+            "m365_hosted=true",
+            f"tenant_assigned={tenant_assigned}",
+            f"service_usage={service_usage}",
+            f"confidence={confidence}",
+            f"score={score}",
+        ]
+        if tenant_hints:
+            proof_parts.append("tenant_hints=" + ",".join(str(v) for v in tenant_hints[:5]))
+        if ms_tokens:
+            proof_parts.append(
+                "ms_verification="
+                + ",".join(f"MS={str(v)}" for v in ms_tokens[:5])
+            )
+        if signals:
+            proof_parts.append("signals=" + "; ".join(str(v) for v in signals[:3]))
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": "; ".join(proof_parts),
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
+def _build_ct_revocation_gap_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["certificate_info"],
+    )
+    report = REPORT_DEFINITIONS["ct_revocation_gaps"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        cert_info = (by_scan.get(scan_id) or {}).get("certificate_info") or {}
+        ct = cert_info.get("certificate_transparency") or {}
+        rev = cert_info.get("revocation") or {}
+        stapling = rev.get("ocsp_stapling") or {}
+        ocsp_urls = rev.get("ocsp_urls") or []
+        crl_urls = rev.get("crl_urls") or []
+        ocsp_reach = rev.get("ocsp_reachability") or []
+        crl_reach = rev.get("crl_reachability") or []
+
+        issues = []
+        has_scts = bool(ct.get("has_embedded_scts"))
+        sct_count = int(ct.get("embedded_scts_count") or 0)
+        if not has_scts:
+            issues.append(f"certificate transparency SCT missing (embedded_scts={sct_count})")
+
+        stapling_present = bool(stapling.get("present"))
+        stapling_quality = str(stapling.get("quality") or "missing").lower()
+        if not stapling_present:
+            issues.append("OCSP stapling missing")
+        elif stapling_quality not in {"good"}:
+            status = str(stapling.get("cert_status") or stapling.get("response_status") or "unknown")
+            issues.append(f"OCSP stapling not good (quality={stapling_quality}, status={status})")
+
+        basic_status = str(rev.get("basic_status") or "unknown").lower()
+        if basic_status in {"revoked", "unknown"}:
+            issues.append(f"basic revocation status={basic_status}")
+
+        if not ocsp_urls and not crl_urls:
+            issues.append("revocation endpoints missing (no OCSP/CRL URLs)")
+        else:
+            ocsp_reachable = any(bool(x.get("reachable")) for x in ocsp_reach if isinstance(x, dict))
+            crl_reachable = any(bool(x.get("reachable")) for x in crl_reach if isinstance(x, dict))
+            if ocsp_urls and not ocsp_reachable:
+                issues.append("OCSP endpoints unreachable")
+            if crl_urls and not crl_reachable:
+                issues.append("CRL endpoints unreachable")
+
+        if not issues:
+            continue
+
+        severity = (
+            "high"
+            if any("revocation status=revoked" in issue for issue in issues)
+            else "medium"
+        )
+        proof = "; ".join(issues)
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": severity,
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_ca_issuers_used_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["certificate_info"],
+    )
+    report = REPORT_DEFINITIONS["ca_issuers_used"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        cert_info = (by_scan.get(scan_id) or {}).get("certificate_info") or {}
+        certs = cert_info.get("certificate_chain") or []
+        leaf = certs[0] if isinstance(certs, list) and certs else {}
+        issuer = str((leaf or {}).get("issuer") or "").strip()
+        subject = str((leaf or {}).get("subject") or "").strip()
+        proof = (
+            f"issuer={issuer or '(unavailable)'}; "
+            f"subject={subject or '(unavailable)'}"
+        )
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_wildcard_certs_in_use_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["certificate_info"],
+    )
+    report = REPORT_DEFINITIONS["wildcard_certs_in_use"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        cert_info = (by_scan.get(scan_id) or {}).get("certificate_info") or {}
+        san_names = _extract_leaf_san_dns(cert_info)
+        cn_name = _extract_leaf_cn(cert_info)
+        wildcard_names = [name for name in san_names if "*" in str(name or "")]
+        if cn_name and "*" in cn_name and cn_name not in wildcard_names:
+            wildcard_names.append(cn_name)
+        if not wildcard_names:
+            continue
+        proof = "wildcard_names=" + ", ".join(wildcard_names[:8])
+        if len(wildcard_names) > 8:
+            proof += f", ... +{len(wildcard_names) - 8} more"
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_https_posture_issue_items(db, checks_cfg=None):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
         db,
@@ -3087,6 +3872,9 @@ def _build_https_posture_issue_items(db):
         ["http_headers", "certificate_info"],
     )
     report = REPORT_DEFINITIONS["https_posture_issues"]
+    thresholds = (checks_cfg or {}).get("thresholds") or {}
+    cert_expiry_days = int(thresholds.get("cert_expiry_days") or 30)
+    hsts_min_max_age = int(thresholds.get("hsts_min_max_age") or 31536000)
     items = []
     for row in latest:
         scan_id = str(row["scan_id"])
@@ -3094,16 +3882,24 @@ def _build_https_posture_issue_items(db):
         headers = results.get("http_headers") or {}
         cert_info = results.get("certificate_info") or {}
         issues = []
-        issues.extend(_extract_hsts_issues(headers))
+        issues.extend(_extract_hsts_issues(headers, min_max_age=hsts_min_max_age))
         redirect_ok, redirect_info = _probe_http_to_https_redirect(str(row["hostname"]))
         if not redirect_ok:
             issues.append(f"http->https redirect not confirmed ({redirect_info})")
-        cert_issue = _extract_cert_near_expiry_issue(cert_info, days=30)
+        cert_issue = _extract_cert_near_expiry_issue(cert_info, days=cert_expiry_days)
         if cert_issue:
             issues.append(cert_issue)
+        issues.extend(_extract_cert_name_issues(str(row["hostname"]), cert_info))
         if not issues:
             continue
-        severity = "high" if any("expired" in i for i in issues) else "medium"
+        severity = (
+            "high"
+            if any(
+                ("expired" in i) or ("SAN/CN mismatch" in i)
+                for i in issues
+            )
+            else "medium"
+        )
         proof = "; ".join(issues)
         items.append(
             {
@@ -3196,21 +3992,43 @@ def _build_cipher_hygiene_risk_items(db):
 
 
 def _build_report_items(db, report_id: str):
+    checks_cfg = read_checks_config(db)
+    if not _is_report_enabled(checks_cfg, report_id):
+        return []
+
     if report_id == "no_tls13":
-        return _build_no_tls13_items(db)
-    if report_id == "legacy_ssl_enabled":
-        return _build_legacy_ssl_items(db)
-    if report_id == "spf_not_strict":
-        return _build_spf_not_strict_items(db)
-    if report_id == "missing_hsts":
-        return _build_missing_hsts_items(db)
-    if report_id == "missing_dmarc_policy":
-        return _build_missing_dmarc_policy_items(db)
-    if report_id == "https_posture_issues":
-        return _build_https_posture_issue_items(db)
-    if report_id == "cipher_hygiene_risk":
-        return _build_cipher_hygiene_risk_items(db)
-    raise HTTPException(status_code=400, detail="Unsupported report_id")
+        rows = _build_no_tls13_items(db)
+    elif report_id == "legacy_ssl_enabled":
+        rows = _build_legacy_ssl_items(db)
+    elif report_id == "spf_not_strict":
+        rows = _build_spf_not_strict_items(db)
+    elif report_id == "missing_hsts":
+        rows = _build_missing_hsts_items(db)
+    elif report_id == "missing_dmarc_policy":
+        rows = _build_missing_dmarc_policy_items(db)
+    elif report_id == "weak_dkim_keys":
+        rows = _build_weak_dkim_keys_items(db, checks_cfg=checks_cfg)
+    elif report_id == "hosted_in_m365":
+        rows = _build_hosted_in_m365_items(db)
+    elif report_id == "ct_revocation_gaps":
+        rows = _build_ct_revocation_gap_items(db)
+    elif report_id == "ca_issuers_used":
+        rows = _build_ca_issuers_used_items(db)
+    elif report_id == "wildcard_certs_in_use":
+        rows = _build_wildcard_certs_in_use_items(db)
+    elif report_id == "https_posture_issues":
+        rows = _build_https_posture_issue_items(db, checks_cfg=checks_cfg)
+    elif report_id == "cipher_hygiene_risk":
+        rows = _build_cipher_hygiene_risk_items(db)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported report_id")
+
+    effective = _effective_report_severity(
+        checks_cfg, report_id, REPORT_DEFINITIONS[report_id]["severity"]
+    )
+    for row in rows:
+        row["severity"] = effective
+    return rows
 
 
 def _normalize_report_id(value: str) -> str:
@@ -3286,7 +4104,20 @@ def list_jobs(
 
 @app.get("/reports/catalog")
 def reports_catalog(user=Depends(get_current_user)):
-    return {"items": list(REPORT_DEFINITIONS.values())}
+    db = SessionLocal()
+    try:
+        checks_cfg = read_checks_config(db)
+        items = []
+        for report_id, report in REPORT_DEFINITIONS.items():
+            item = dict(report)
+            item["enabled"] = _is_report_enabled(checks_cfg, report_id)
+            item["effective_severity"] = _effective_report_severity(
+                checks_cfg, report_id, report["severity"]
+            )
+            items.append(item)
+        return {"items": items}
+    finally:
+        db.close()
 
 
 @app.get("/reports/findings")
@@ -3309,6 +4140,12 @@ def report_findings(
 
     db = SessionLocal()
     try:
+        checks_cfg = read_checks_config(db)
+        report_meta = dict(report_meta)
+        report_meta["enabled"] = _is_report_enabled(checks_cfg, report_id)
+        report_meta["effective_severity"] = _effective_report_severity(
+            checks_cfg, report_id, report_meta.get("severity")
+        )
         rows = _build_report_items(db, report_id)
         total = len(rows)
         start = max(0, int(offset or 0))

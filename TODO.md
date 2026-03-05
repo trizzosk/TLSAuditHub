@@ -4,10 +4,10 @@ This backlog captures candidate checks/functionality to add on top of current SS
 
 ## High Priority
 
-- [ ] **DKIM checks**
+- [x] **DKIM checks**
   - [x] Discover selectors with configurable selector list + fallback heuristics.
   - [x] Validate DKIM TXT syntax (`v=DKIM1`, `k=`, `p=` fields).
-  - [ ] Validate key strength/algorithm (flag weak RSA key sizes).
+  - [x] Validate key strength/algorithm (flag weak RSA key sizes).
 
 - [ ] **MTA-STS checks**
   - [ ] Validate `_mta-sts.<domain>` TXT record.
@@ -38,16 +38,16 @@ This backlog captures candidate checks/functionality to add on top of current SS
   - [ ] Test STARTTLS support across all MX hosts.
   - [ ] Verify consistency of TLS support/policy across MX set.
 
-- [ ] **Certificate transparency + revocation checks**
-  - [ ] OCSP stapling presence/quality.
-  - [ ] OCSP/CRL endpoint reachability.
-  - [ ] Basic revocation status checks.
+- [x] **Certificate transparency + revocation checks**
+  - [x] OCSP stapling presence/quality.
+  - [x] OCSP/CRL endpoint reachability.
+  - [x] Basic revocation status checks.
 
 - [x] **HTTPS posture checks**
   - [x] HTTP -> HTTPS redirect checks.
   - [x] HSTS posture checks (presence, max-age baseline, preload flag).
   - [x] Certificate expiry checks (expired / near expiry).
-  - [ ] Cert SAN/CN mismatch and wildcard risk flags.
+  - [x] Cert SAN/CN mismatch and wildcard risk flags.
 
 - [x] **Cipher hygiene scoring**
   - [x] Risk scoring based on protocol/cipher findings.
@@ -78,12 +78,16 @@ This backlog captures candidate checks/functionality to add on top of current SS
   - [ ] DKIM key age/rotation reminders.
   - [ ] SPF include-chain depth/lookup-limit warnings.
 
-- [ ] **Configurability**
-  - [ ] Admin-configurable selector lists (DKIM), thresholds, and severities.
-  - [ ] Per-check enable/disable toggles.
-  - [ ] Environment + UI config support for new checks.
+- [x] **Configurability**
+  - [x] Admin-configurable selector lists (DKIM), thresholds, and severities.
+  - [x] Per-check enable/disable toggles.
+  - [x] Environment + UI config support for new checks.
 
-- [ ] **UI/UX**
-  - [ ] Add dedicated Mail Security dashboard section.
-  - [ ] Add check-specific drilldown views and remediation hints.
-  - [ ] Add trend views for posture change over time.
+- [x] **UI/UX**
+  - [x] Add dedicated Mail Security dashboard section.
+  - [x] Add check-specific drilldown views and remediation hints.
+  - [-] Add trend views for posture change over time.
+
+- [x] **Reporting**
+  - [x] Add the report of CA's used (Issued by)
+  - [x] Report of wildcard certs in use including hosts/targets

@@ -32,8 +32,10 @@ from urllib.request import (
     HTTPRedirectHandler,
     Request,
     build_opener,
+    urlopen,
 )
 from urllib.error import HTTPError, URLError
+import urllib.parse
 
 DNS_SCOPE_VALUES = {"system", "private", "public"}
 
@@ -224,8 +226,16 @@ def maybe_run_scheduled_scans():
 def run_scheduled_scans():
     db = SessionLocal()
     try:
+        _ensure_targets_check_columns(db)
         rows = db.execute(
-            text("SELECT id FROM targets WHERE enabled = true")
+            text(
+                """
+                SELECT id
+                FROM targets
+                WHERE enabled = true
+                  AND tls_checks_enabled = true
+                """
+            )
         ).fetchall()
     finally:
         db.close()
@@ -241,14 +251,23 @@ def run_scan(target_id: str):
 
     try:
         _ensure_targets_dns_scope_column(db)
+        _ensure_targets_check_columns(db)
         ensure_scans_error_message_column(db)
         target_row = db.execute(
-            text("SELECT hostname, port, dns_scope FROM targets WHERE id=:id"),
+            text(
+                """
+                SELECT hostname, port, dns_scope, tls_checks_enabled
+                FROM targets
+                WHERE id=:id
+                """
+            ),
             {"id": target_id},
         ).fetchone()
         if not target_row:
             return
         target = target_row._mapping
+        if not bool(target.get("tls_checks_enabled")):
+            return
 
         scan_id = str(uuid.uuid4())
         db.execute(
@@ -406,8 +425,15 @@ def run_dns_lookup(target_id: str):
     try:
         _ensure_target_dns_table(db)
         _ensure_targets_dns_scope_column(db)
+        _ensure_targets_check_columns(db)
         row = db.execute(
-            text("SELECT hostname, dns_scope FROM targets WHERE id=:id"),
+            text(
+                """
+                SELECT hostname, dns_scope
+                FROM targets
+                WHERE id=:id
+                """
+            ),
             {"id": target_id},
         ).fetchone()
         if not row:
@@ -788,6 +814,44 @@ def _ensure_targets_dns_scope_column(db):
     db.commit()
 
 
+def _ensure_targets_check_columns(db):
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS dns_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE targets
+            ADD COLUMN IF NOT EXISTS tls_checks_enabled BOOLEAN NOT NULL DEFAULT TRUE
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET dns_checks_enabled=TRUE
+            WHERE dns_checks_enabled IS NULL
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            UPDATE targets
+            SET tls_checks_enabled=TRUE
+            WHERE tls_checks_enabled IS NULL
+            """
+        )
+    )
+    db.commit()
+
+
 def _safe_list(value):
     if value is None:
         return []
@@ -1095,6 +1159,154 @@ def _parse_dmarc_policy(record):
     return ""
 
 
+def _extract_spf_tokens(spf_record):
+    value = str(spf_record or "").strip()
+    if not value:
+        return []
+    return [token.strip().lower() for token in re.split(r"\s+", value) if token.strip()]
+
+
+def _extract_ms_verification_tokens(txt_records):
+    tokens = []
+    seen = set()
+    for record in txt_records or []:
+        text_value = str(record or "").strip()
+        if not text_value:
+            continue
+        lowered = text_value.lower()
+        if not lowered.startswith("ms="):
+            continue
+        token = text_value.split("=", 1)[1].strip()
+        if not token:
+            continue
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens.append(token)
+    return tokens
+
+
+def _extract_m365_tenant_hint_from_mx(mx_exchange):
+    host = _normalize_host_name(mx_exchange)
+    suffix = ".mail.protection.outlook.com"
+    if not host.endswith(suffix):
+        return ""
+    prefix = host[: -len(suffix)].strip(".")
+    # Keep only tenant-style single-label prefixes.
+    if not prefix or "." in prefix:
+        return ""
+    if not re.match(r"^[a-z0-9][a-z0-9-]{0,62}$", prefix):
+        return ""
+    return prefix
+
+
+def _detect_m365_hosting(
+    hostname, spf_record, txt_records, mx_records, resolver, attempts
+):
+    host = _normalize_host_name(hostname)
+    mx_hosts = []
+    for record in mx_records or []:
+        if isinstance(record, dict):
+            mx_hosts.append(_normalize_host_name(record.get("exchange")))
+        else:
+            mx_hosts.append(_normalize_host_name(record))
+    mx_hosts = [value for value in mx_hosts if value]
+
+    signals = []
+    score = 0
+    tenant_hints = []
+    seen_tenants = set()
+    outlook_mx_hosts = []
+    ms_verification_tokens = _extract_ms_verification_tokens(txt_records)
+    tenant_assigned = False
+    service_usage = False
+
+    for exchange in mx_hosts:
+        if exchange.endswith(".mail.protection.outlook.com"):
+            outlook_mx_hosts.append(exchange)
+            tenant_hint = _extract_m365_tenant_hint_from_mx(exchange)
+            if tenant_hint and tenant_hint not in seen_tenants:
+                seen_tenants.add(tenant_hint)
+                tenant_hints.append(tenant_hint)
+
+    if outlook_mx_hosts:
+        signals.append(
+            f"exchange_online_mx={', '.join(outlook_mx_hosts[:4])}"
+        )
+        service_usage = True
+        tenant_assigned = True
+        score += 3
+
+    spf_tokens = _extract_spf_tokens(spf_record)
+    has_spf_o365 = any(
+        token == "include:spf.protection.outlook.com"
+        or token == "redirect=spf.protection.outlook.com"
+        for token in spf_tokens
+    )
+    if has_spf_o365:
+        signals.append("spf_includes_m365=spf.protection.outlook.com")
+        service_usage = True
+        score += 2
+
+    if ms_verification_tokens:
+        signals.append(
+            "ms_verification_txt="
+            + ", ".join(f"MS={token}" for token in ms_verification_tokens[:4])
+        )
+        tenant_assigned = True
+        score += 1
+
+    autodiscover_host = f"autodiscover.{host}" if host else ""
+    autodiscover_target = ""
+    autodiscover_meta = {
+        "ok": False,
+        "error_code": "SKIPPED_EMPTY_HOST",
+        "error": "hostname empty",
+        "attempts": 0,
+        "query": {"name": autodiscover_host, "type": "CNAME"},
+    }
+    if autodiscover_host:
+        cname_records, autodiscover_meta = _resolve_records(
+            autodiscover_host, "CNAME", resolver, attempts
+        )
+        if cname_records:
+            autodiscover_target = _normalize_host_name(cname_records[0])
+            if autodiscover_target.endswith(".outlook.com"):
+                signals.append(
+                    f"autodiscover_cname={autodiscover_target}"
+                )
+                service_usage = True
+                score += 1
+
+    hosted = bool(service_usage and tenant_assigned)
+    if score >= 5:
+        confidence = "high"
+    elif score >= 3:
+        confidence = "medium"
+    elif score > 0:
+        confidence = "low"
+    else:
+        confidence = "none"
+
+    return {
+        "hosted": hosted,
+        "tenant_assigned": tenant_assigned,
+        "service_usage": service_usage,
+        "confidence": confidence,
+        "score": score,
+        "signals": signals,
+        "tenant_hints": tenant_hints,
+        "ms_verification_tokens": ms_verification_tokens,
+        "mx_outlook_hosts": outlook_mx_hosts,
+        "autodiscover": {
+            "name": autodiscover_host,
+            "target": autodiscover_target,
+            "query": autodiscover_meta,
+        },
+    }
+
+
 def _env_bool(name, default):
     raw = os.environ.get(name, "true" if default else "false")
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
@@ -1394,8 +1606,25 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
         "resolved_ips": [],
         "ns": [],
         "mx": [],
+        "txt": [],
         "spf": "",
         "dmarc": {"record": "", "policy": "", "domain": ""},
+        "m365": {
+            "hosted": False,
+            "tenant_assigned": False,
+            "service_usage": False,
+            "confidence": "none",
+            "score": 0,
+            "signals": [],
+            "tenant_hints": [],
+            "ms_verification_tokens": [],
+            "mx_outlook_hosts": [],
+            "autodiscover": {
+                "name": "",
+                "target": "",
+                "query": {},
+            },
+        },
         "dkim": {
             "domains": [],
             "selectors": [],
@@ -1476,7 +1705,16 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
         txt_records, payload["dns_meta"]["queries"]["txt"] = _resolve_records(
             host, "TXT", resolver, attempts
         )
+        payload["txt"] = txt_records
         payload["spf"] = _extract_spf(txt_records)
+        payload["m365"] = _detect_m365_hosting(
+            host,
+            payload["spf"],
+            txt_records,
+            payload["mx"],
+            resolver,
+            attempts,
+        )
 
         dmarc_domain = f"_dmarc.{host}"
         dmarc_txt, payload["dns_meta"]["queries"]["dmarc_txt"] = _resolve_records(
@@ -1566,6 +1804,159 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
+def _http_url_reachability(url, timeout_seconds=5):
+    target = str(url or "").strip()
+    if not target:
+        return {
+            "url": target,
+            "reachable": False,
+            "status_code": None,
+            "error": "empty_url",
+        }
+    parsed = urllib.parse.urlparse(target)
+    if parsed.scheme not in {"http", "https"}:
+        return {
+            "url": target,
+            "reachable": False,
+            "status_code": None,
+            "error": f"unsupported_scheme:{parsed.scheme or 'unknown'}",
+        }
+    request = Request(
+        target,
+        method="HEAD",
+        headers={"User-Agent": "TLSAuditHub/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            return {
+                "url": target,
+                "reachable": True,
+                "status_code": int(response.getcode()),
+                "error": "",
+            }
+    except HTTPError as exc:
+        return {
+            "url": target,
+            "reachable": True,
+            "status_code": int(exc.code),
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "url": target,
+            "reachable": False,
+            "status_code": None,
+            "error": exc.__class__.__name__,
+        }
+
+
+def _extract_ct_info(leaf_cert):
+    info = {
+        "has_embedded_scts": False,
+        "embedded_scts_count": 0,
+    }
+    try:
+        from cryptography.x509.oid import ExtensionOID
+
+        ext = leaf_cert.extensions.get_extension_for_oid(
+            ExtensionOID.PRECERT_SIGNED_CERTIFICATE_TIMESTAMPS
+        )
+        scts = list(ext.value) if ext and ext.value is not None else []
+        info["embedded_scts_count"] = len(scts)
+        info["has_embedded_scts"] = bool(scts)
+    except Exception:
+        pass
+    return info
+
+
+def _extract_revocation_urls(leaf_cert):
+    out = {"ocsp_urls": [], "crl_urls": []}
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import AuthorityInformationAccessOID
+
+        aia_ext = leaf_cert.extensions.get_extension_for_class(
+            x509.AuthorityInformationAccess
+        )
+        ocsp_urls = []
+        for access_desc in aia_ext.value:
+            if access_desc.access_method == AuthorityInformationAccessOID.OCSP:
+                value = getattr(access_desc.access_location, "value", "") or ""
+                if value and value not in ocsp_urls:
+                    ocsp_urls.append(str(value))
+        out["ocsp_urls"] = ocsp_urls
+    except Exception:
+        pass
+
+    try:
+        from cryptography import x509
+
+        crl_ext = leaf_cert.extensions.get_extension_for_class(
+            x509.CRLDistributionPoints
+        )
+        crl_urls = []
+        for dp in crl_ext.value:
+            full_names = getattr(dp, "full_name", None) or []
+            for full_name in full_names:
+                value = getattr(full_name, "value", "") or ""
+                if value and value not in crl_urls:
+                    crl_urls.append(str(value))
+        out["crl_urls"] = crl_urls
+    except Exception:
+        pass
+    return out
+
+
+def _extract_ocsp_stapling_info(deployment):
+    payload = {
+        "present": False,
+        "quality": "missing",
+        "response_status": "",
+        "cert_status": "",
+        "this_update": "",
+        "next_update": "",
+        "error": "",
+    }
+    ocsp_blob = getattr(deployment, "ocsp_response", None)
+    if not ocsp_blob:
+        return payload
+    payload["present"] = True
+    try:
+        from cryptography.x509 import ocsp
+
+        if isinstance(ocsp_blob, str):
+            ocsp_blob = ocsp_blob.encode("latin-1", "ignore")
+        if not isinstance(ocsp_blob, (bytes, bytearray)):
+            raise ValueError("unsupported_ocsp_blob_type")
+        parsed = ocsp.load_der_ocsp_response(bytes(ocsp_blob))
+        response_status = str(getattr(parsed, "response_status", "") or "")
+        cert_status = str(getattr(parsed, "certificate_status", "") or "")
+        this_update = getattr(parsed, "this_update", None)
+        next_update = getattr(parsed, "next_update", None)
+        payload["response_status"] = response_status
+        payload["cert_status"] = cert_status
+        payload["this_update"] = (
+            this_update.isoformat() if hasattr(this_update, "isoformat") else ""
+        )
+        payload["next_update"] = (
+            next_update.isoformat() if hasattr(next_update, "isoformat") else ""
+        )
+        good_response = "successful" in response_status.lower()
+        good_cert = "good" in cert_status.lower()
+        if good_response and good_cert:
+            payload["quality"] = "good"
+        elif "revoked" in cert_status.lower():
+            payload["quality"] = "revoked"
+        elif cert_status:
+            payload["quality"] = "unknown"
+        else:
+            payload["quality"] = "invalid"
+    except Exception as exc:
+        payload["quality"] = "invalid"
+        payload["error"] = exc.__class__.__name__
+    return payload
+
+
 def _https_url(hostname, port):
     host = str(hostname or "").strip()
     if ":" in host and not host.startswith("["):
@@ -1639,9 +2030,34 @@ def _serialize_http_headers(headers_result, hostname, port):
 def _serialize_certificate_info(cert_result):
     deployments = cert_result.certificate_deployments
     if not deployments:
-        return {"certificate_chain": []}
+        return {
+            "certificate_chain": [],
+            "certificate_transparency": {
+                "has_embedded_scts": False,
+                "embedded_scts_count": 0,
+            },
+            "revocation": {
+                "ocsp_stapling": {
+                    "present": False,
+                    "quality": "missing",
+                    "response_status": "",
+                    "cert_status": "",
+                    "this_update": "",
+                    "next_update": "",
+                    "error": "",
+                },
+                "basic_status": "unknown",
+                "ocsp_urls": [],
+                "crl_urls": [],
+                "ocsp_reachability": [],
+                "crl_reachability": [],
+                "reachable_ocsp_count": 0,
+                "reachable_crl_count": 0,
+            },
+        }
 
-    leaf_cert = deployments[0].received_certificate_chain[0]
+    deployment = deployments[0]
+    leaf_cert = deployment.received_certificate_chain[0]
     not_before = getattr(
         leaf_cert, "not_valid_before_utc", leaf_cert.not_valid_before
     )
@@ -1660,6 +2076,27 @@ def _serialize_certificate_info(cert_result):
     except Exception:
         san_values = []
 
+    ct_info = _extract_ct_info(leaf_cert)
+    revocation_urls = _extract_revocation_urls(leaf_cert)
+    max_revocation_urls = 4
+    ocsp_reachability = [
+        _http_url_reachability(url, timeout_seconds=5)
+        for url in revocation_urls["ocsp_urls"][:max_revocation_urls]
+    ]
+    crl_reachability = [
+        _http_url_reachability(url, timeout_seconds=5)
+        for url in revocation_urls["crl_urls"][:max_revocation_urls]
+    ]
+    ocsp_stapling = _extract_ocsp_stapling_info(deployment)
+    basic_status = "unknown"
+    cert_status = str(ocsp_stapling.get("cert_status") or "").lower()
+    if "good" in cert_status:
+        basic_status = "good"
+    elif "revoked" in cert_status:
+        basic_status = "revoked"
+    elif "unknown" in cert_status:
+        basic_status = "unknown"
+
     return {
         "certificate_chain": [
             {
@@ -1669,7 +2106,22 @@ def _serialize_certificate_info(cert_result):
                 "not_after": not_after.isoformat(),
                 "subject_alternative_name": san_values,
             }
-        ]
+        ],
+        "certificate_transparency": ct_info,
+        "revocation": {
+            "ocsp_stapling": ocsp_stapling,
+            "basic_status": basic_status,
+            "ocsp_urls": revocation_urls["ocsp_urls"],
+            "crl_urls": revocation_urls["crl_urls"],
+            "ocsp_reachability": ocsp_reachability,
+            "crl_reachability": crl_reachability,
+            "reachable_ocsp_count": sum(
+                1 for item in ocsp_reachability if item.get("reachable")
+            ),
+            "reachable_crl_count": sum(
+                1 for item in crl_reachability if item.get("reachable")
+            ),
+        },
     }
 
 

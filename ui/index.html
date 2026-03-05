@@ -80,6 +80,20 @@
           <article class="metric-card card shadow-sm"><div class="card-body"><h3>Scan Results</h3><p id="metricResultsTotal">0</p></div></article>
           <article class="metric-card card shadow-sm"><div class="card-body"><h3>Diff Events</h3><p id="metricDiffsTotal">0</p></div></article>
         </div>
+        <section class="card shadow-sm mt-3">
+          <div class="card-body">
+            <div class="section-header">
+              <h3 class="h5 mb-0">Mail Security</h3>
+            </div>
+            <div class="cards-grid mt-3">
+              <article class="metric-card card shadow-sm"><div class="card-body"><h3>Mail Targets</h3><p id="metricMailTargetsTotal">0</p></div></article>
+              <article class="metric-card card shadow-sm"><div class="card-body"><h3>SPF Strict (-all)</h3><p id="metricMailSpfStrict">0</p></div></article>
+              <article class="metric-card card shadow-sm"><div class="card-body"><h3>DMARC Enforced</h3><p id="metricMailDmarcEnforced">0</p></div></article>
+              <article class="metric-card card shadow-sm"><div class="card-body"><h3>DKIM Present</h3><p id="metricMailDkimPresent">0</p></div></article>
+              <article class="metric-card card shadow-sm"><div class="card-body"><h3>Spoofable</h3><p id="metricMailSpoofable">0</p></div></article>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section id="targetsView" class="view">
@@ -103,6 +117,17 @@
                   <option value="public">Public</option>
                 </select>
               </div>
+              <div class="form-field">
+                <span class="form-label">Checks</span>
+                <div class="form-check">
+                  <input id="checksTlsEnabled" class="form-check-input" type="checkbox" checked>
+                  <label for="checksTlsEnabled" class="form-check-label">TLS checks (SSLyze, HSTS, cipher hygiene)</label>
+                </div>
+                <div class="form-check">
+                  <input id="checksDnsEnabled" class="form-check-input" type="checkbox" checked>
+                  <label for="checksDnsEnabled" class="form-check-label">DNS report checks (SPF, DKIM, DMARC, etc.)</label>
+                </div>
+              </div>
               <button class="btn btn-primary" type="submit">Add Target</button>
             </form>
           </div>
@@ -112,7 +137,10 @@
           <div class="card-body">
             <div class="section-header">
               <h3 class="h5 mb-0">Target Inventory</h3>
-              <button id="refreshTargetsBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Targets</button>
+              <div class="section-actions">
+                <button id="exportTargetsCsvBtn" class="btn btn-outline-secondary btn-sm" type="button">Export CSV</button>
+                <button id="refreshTargetsBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Targets</button>
+              </div>
             </div>
             <div class="table-wrap mt-3">
               <table class="table table-hover align-middle">
@@ -121,17 +149,23 @@
                     <th scope="col">Hostname</th>
                     <th scope="col">Port</th>
                     <th scope="col">DNS Scope</th>
+                    <th scope="col">TLS Checks</th>
+                    <th scope="col">DNS Reports</th>
                     <th scope="col">Enabled</th>
                     <th scope="col">Scan Interval (min)</th>
                     <th scope="col">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="targetsBody">
-                  <tr><td colspan="6" class="muted">No data loaded</td></tr>
+                  <tr><td colspan="8" class="muted">No data loaded</td></tr>
                 </tbody>
               </table>
             </div>
             <div class="table-controls">
+              <label for="targetsSearch">Search</label>
+              <input id="targetsSearch" class="form-control form-control-sm" type="search" placeholder="hostname contains...">
+              <button id="targetsSearchBtn" class="btn btn-outline-secondary btn-sm" type="button">Search</button>
+              <button id="targetsClearSearchBtn" class="btn btn-outline-secondary btn-sm" type="button">Clear</button>
               <label for="targetsPageSize">Rows</label>
               <select id="targetsPageSize" class="form-select form-select-sm">
                 <option value="10" selected>10</option>
@@ -167,6 +201,17 @@
                         <option value="private">Private</option>
                         <option value="public">Public</option>
                       </select>
+                    </div>
+                    <div class="form-field">
+                      <span class="form-label">Checks</span>
+                      <div class="form-check">
+                        <input id="editTargetTlsChecksEnabled" class="form-check-input" type="checkbox" checked>
+                        <label for="editTargetTlsChecksEnabled" class="form-check-label">TLS checks (SSLyze, HSTS, cipher hygiene)</label>
+                      </div>
+                      <div class="form-check">
+                        <input id="editTargetDnsChecksEnabled" class="form-check-input" type="checkbox" checked>
+                        <label for="editTargetDnsChecksEnabled" class="form-check-label">DNS report checks (SPF, DKIM, DMARC, etc.)</label>
+                      </div>
                     </div>
                     <div class="target-actions">
                       <button type="submit" class="btn btn-primary">Save Target</button>
@@ -214,6 +259,22 @@
               </table>
             </div>
             <div class="table-controls">
+              <label for="spoofableDmarcFilter">DMARC</label>
+              <select id="spoofableDmarcFilter" class="form-select form-select-sm">
+                <option value="all" selected>All</option>
+                <option value="missing">Missing</option>
+                <option value="none">None</option>
+                <option value="quarantine">Quarantine</option>
+                <option value="reject">Reject</option>
+                <option value="other">Other</option>
+              </select>
+              <label for="spoofableResultFilter">Result</label>
+              <select id="spoofableResultFilter" class="form-select form-select-sm">
+                <option value="all" selected>All</option>
+                <option value="spoofable">Spoofable</option>
+                <option value="needs_review">Needs review</option>
+                <option value="not_spoofable">Not spoofable</option>
+              </select>
               <label for="spoofablePageSize">Rows</label>
               <select id="spoofablePageSize" class="form-select form-select-sm">
                 <option value="10" selected>10</option>
@@ -252,7 +313,12 @@
                   <option value="missing_hsts">Hosts Missing HSTS Header</option>
                   <option value="https_posture_issues">Hosts With HTTPS Posture Issues</option>
                   <option value="cipher_hygiene_risk">Hosts With Cipher Hygiene Risk</option>
+                  <option value="ct_revocation_gaps">Hosts With CT/Revocation Gaps</option>
+                  <option value="ca_issuers_used">Certificate Issuers In Use</option>
+                  <option value="wildcard_certs_in_use">Wildcard Certificates In Use</option>
                   <option value="missing_dmarc_policy">Hosts Missing DMARC Policy</option>
+                  <option value="weak_dkim_keys">Hosts With Weak DKIM RSA Keys</option>
+                  <option value="hosted_in_m365">Hosts Detected As Microsoft 365-Hosted</option>
                 </select>
               </div>
               <div class="form-field reports-run-field">
@@ -293,6 +359,26 @@
               <span id="reportsPageInfo" class="muted">Page 1 of 1</span>
               <button id="reportsNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
             </div>
+            <section id="reportDrilldownPanel" class="card shadow-sm mt-3">
+              <div class="card-body">
+                <div class="section-header">
+                  <h3 class="h5 mb-0">Finding Drilldown</h3>
+                </div>
+                <p id="reportDrilldownEmpty" class="muted mt-3 mb-0">Select a report row to view check-specific details and remediation hints.</p>
+                <div id="reportDrilldownContent" class="hidden mt-3">
+                  <dl class="result-grid">
+                    <dt>Host / Target</dt><dd id="reportDrilldownHost" class="tiny-mono">-</dd>
+                    <dt>Finding ID</dt><dd id="reportDrilldownFinding">-</dd>
+                    <dt>Severity</dt><dd id="reportDrilldownSeverity">-</dd>
+                    <dt>Scan Timestamp</dt><dd id="reportDrilldownScanTime">-</dd>
+                  </dl>
+                  <h4 class="h6 mt-3">Evidence</h4>
+                  <pre id="reportDrilldownProof" class="mb-2">-</pre>
+                  <h4 class="h6 mt-3">Remediation Hints</h4>
+                  <ul id="reportDrilldownHints" class="result-list mb-0"></ul>
+                </div>
+              </div>
+            </section>
 
             <section id="reportEmailPanel" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="reportEmailPanelTitle">
               <div class="card modal-card shadow-sm">
@@ -379,6 +465,7 @@
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSchedulerPage">Scheduler</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminSmtpPage">SMTP</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminDkimPage">DKIM</button>
+              <button class="admin-nav-item btn" type="button" data-admin-page="adminChecksPage">Checks Policy</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminImportPage">Bulk Import</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminPurgePage">Data Purge</button>
               <button class="admin-nav-item btn" type="button" data-admin-page="adminLogPage">Event Log</button>
@@ -438,6 +525,7 @@
                       <p class="form-hint mb-0">Choose deliberately: Admin users can change auth, proxy, SMTP, scheduler, users, and data purge settings.</p>
                     </section>
                     <button type="submit" id="createUserBtn" class="btn btn-primary mt-2">Create User</button>
+                    <p id="userCreateStatus" class="form-hint mt-2 mb-0" aria-live="polite"></p>
                   </form>
                   <div class="table-wrap mt-3">
                     <table class="table table-hover align-middle">
@@ -791,6 +879,50 @@
               </section>
             </section>
 
+            <section id="adminChecksPage" class="admin-page">
+              <section class="card shadow-sm">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Check Configurability</h3>
+                    <button id="reloadChecksConfigBtn" class="btn btn-outline-primary btn-sm" type="button">Reload Checks Config</button>
+                  </div>
+                  <form id="checksConfigForm" class="proxy-form mt-3">
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="checkDkimMinRsaBits" class="form-label">DKIM Min RSA Bits</label>
+                        <input id="checkDkimMinRsaBits" class="form-control" type="number" min="512" max="16384" step="1" value="2048">
+                      </div>
+                      <div class="form-field">
+                        <label for="checkCertExpiryDays" class="form-label">Cert Expiry Threshold (days)</label>
+                        <input id="checkCertExpiryDays" class="form-control" type="number" min="1" max="3650" step="1" value="30">
+                      </div>
+                      <div class="form-field">
+                        <label for="checkHstsMinMaxAge" class="form-label">HSTS Min Max-Age (seconds)</label>
+                        <input id="checkHstsMinMaxAge" class="form-control" type="number" min="0" max="63072000" step="1" value="31536000">
+                      </div>
+                    </div>
+                    <div class="table-wrap mt-3">
+                      <table class="table table-hover align-middle">
+                        <thead>
+                          <tr>
+                            <th scope="col">Report</th>
+                            <th scope="col">Finding ID</th>
+                            <th scope="col">Enabled</th>
+                            <th scope="col">Severity</th>
+                          </tr>
+                        </thead>
+                        <tbody id="checksConfigTableBody">
+                          <tr><td colspan="4" class="muted">Loading check policies...</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p class="form-hint">Severity can be overridden per report. Leave as default to use built-in severity.</p>
+                    <button type="submit" id="saveChecksConfigBtn" class="btn btn-primary mt-2">Save Checks Config</button>
+                  </form>
+                </div>
+              </section>
+            </section>
+
             <section id="adminImportPage" class="admin-page">
               <section class="card shadow-sm">
                 <div class="card-body">
@@ -802,8 +934,12 @@
                       <label for="targetsCsvFile" class="form-label">CSV File</label>
                       <input id="targetsCsvFile" class="form-control" type="file" accept=".csv,text/csv" required>
                       <p class="form-hint">CSV format: one target per line as <span class="tiny-mono">hostname,port</span> or <span class="tiny-mono">hostname</span>. Do not include a header row.</p>
+                      <p class="form-hint">After import, review each target in <strong>Hosts / Targets -> Edit</strong> and choose the required checks. <span class="tiny-mono">DNS report checks</span> affects DNS-based reports only; DNS data collection (IP, WHOIS, records) still runs.</p>
                     </div>
-                    <button type="submit" id="importTargetsBtn" class="btn btn-primary">Import CSV</button>
+                    <div class="target-actions">
+                      <button id="downloadTargetsTemplateBtn" type="button" class="btn btn-outline-secondary">Download CSV Template</button>
+                      <button type="submit" id="importTargetsBtn" class="btn btn-primary">Import CSV</button>
+                    </div>
                   </form>
                 </div>
               </section>
