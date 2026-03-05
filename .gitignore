@@ -1,1 +1,9 @@
 tmp_hosts.csv
+api/__pycache__/auth.cpython-312.pyc
+api/__pycache__/deps.cpython-312.pyc
+api/__pycache__/main.cpython-312.pyc
+app/__pycache__/database.cpython-312.pyc
+worker/__pycache__/diff.cpython-312.pyc
+worker/__pycache__/normalize.cpython-312.pyc
+worker/__pycache__/worker.cpython-312.pyc
+worker/celerybeat-schedule
