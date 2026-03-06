@@ -1009,7 +1009,9 @@ def _make_server_location(hostname, port, proxy_settings, resolved_ip=""):
         "port": port,
         "http_proxy_settings": proxy_settings,
     }
-    if resolved_ip:
+    # SSLyze does not allow ip_address together with http_proxy_settings.
+    # When proxy is enabled, proxy performs DNS resolution itself.
+    if resolved_ip and proxy_settings is None:
         try:
             params = inspect.signature(ServerNetworkLocation).parameters
             if "ip_address" in params:
