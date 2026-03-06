@@ -207,6 +207,17 @@ REPORT_DEFINITIONS = {
         ),
         "severity": "medium",
     },
+    "pqc_non_compliant": {
+        "id": "pqc_non_compliant",
+        "finding_id": "PQC_NON_COMPLIANT",
+        "title": "Hosts Not Compliant With PQC",
+        "description": (
+            "Targets where latest completed TLS scans do not support TLS 1.3 "
+            "or do not report PQC-capable key exchange groups "
+            "(for example ML-KEM/Kyber hybrids)."
+        ),
+        "severity": "high",
+    },
     "legacy_ssl_enabled": {
         "id": "legacy_ssl_enabled",
         "finding_id": "SSLV2_OR_SSLV3_ENABLED",
@@ -265,6 +276,16 @@ REPORT_DEFINITIONS = {
             "M365 SPF includes, and Outlook autodiscover CNAME)."
         ),
         "severity": "low",
+    },
+    "spoofable_domains_hosts": {
+        "id": "spoofable_domains_hosts",
+        "finding_id": "SPOOFABLE_DOMAIN_OR_HOST",
+        "title": "Spoofable Domains/Hosts",
+        "description": (
+            "Domains/hosts where SPF is not strict (-all) and DMARC policy is "
+            "missing or p=none, with active mail-routing signals (MX/A/AAAA)."
+        ),
+        "severity": "high",
     },
     "ct_revocation_gaps": {
         "id": "ct_revocation_gaps",
@@ -3365,6 +3386,21 @@ def _has_forward_secrecy(cipher_names: list[str]) -> bool:
     return False
 
 
+def _is_pqc_group_name(group_name: str) -> bool:
+    value = str(group_name or "").upper()
+    if not value:
+        return False
+    tokens = (
+        "MLKEM",
+        "KYBER",
+        "FRODOKEM",
+        "BIKE",
+        "HQC",
+        "NTRU",
+    )
+    return any(token in value for token in tokens)
+
+
 def _build_no_tls13_items(db):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
@@ -3423,6 +3459,83 @@ def _build_legacy_ssl_items(db):
         proof = (
             f"ssl2_supported={ssl2_supported} (accepted={ssl2_count}); "
             f"ssl3_supported={ssl3_supported} (accepted={ssl3_count})"
+        )
+        items.append(
+            {
+                "target_id": str(row["target_id"]),
+                "host_target": f'{row["hostname"]}:{row["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": row["scan_timestamp_utc"],
+            }
+        )
+    return items
+
+
+def _build_pqc_non_compliant_items(db):
+    latest = _latest_completed_scans(db)
+    by_scan = _load_results_for_scans(
+        db,
+        [str(item["scan_id"]) for item in latest],
+        ["elliptic_curves", "tls_1_3_cipher_suites"],
+    )
+    report = REPORT_DEFINITIONS["pqc_non_compliant"]
+    items = []
+    for row in latest:
+        scan_id = str(row["scan_id"])
+        scan_results = by_scan.get(scan_id) or {}
+        group_scan = scan_results.get("elliptic_curves") or {}
+        tls13_scan = scan_results.get("tls_1_3_cipher_suites") or {}
+
+        raw_groups = []
+        for key in (
+            "supported_groups",
+            "accepted_groups",
+            "supported_curves",
+            "accepted_curves",
+            "curves",
+        ):
+            values = group_scan.get(key) or []
+            if isinstance(values, list):
+                raw_groups.extend(values)
+
+        groups = []
+        seen = set()
+        for value in raw_groups:
+            name = str(value or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            groups.append(name)
+
+        has_pqc_group = any(_is_pqc_group_name(name) for name in groups)
+        if has_pqc_group:
+            continue
+
+        tls13_supported = _coerce_support_flag(
+            tls13_scan.get(
+                "is_protocol_supported",
+                tls13_scan.get("is_tls_version_supported"),
+            )
+        )
+        if not tls13_supported:
+            reason = "TLS 1.3 is not supported"
+        elif not groups:
+            reason = "TLS 1.3 supported but key exchange group data is unavailable"
+        else:
+            reason = "no PQC-capable key exchange groups detected"
+        if not groups and not tls13_supported:
+            reason = "TLS 1.3 is not supported and key exchange group data is unavailable"
+        groups_preview = ", ".join(groups[:8]) if groups else "(none)"
+        if len(groups) > 8:
+            groups_preview += f", ... +{len(groups) - 8} more"
+        proof = (
+            f"{reason}; tls13_supported={tls13_supported}; "
+            f"supported_groups={groups_preview}"
         )
         items.append(
             {
@@ -3726,6 +3839,69 @@ def _build_hosted_in_m365_items(db):
     return items
 
 
+def _build_spoofable_domains_hosts_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status IN ('completed', 'done')
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["spoofable_domains_hosts"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        spf = str(dns_data.get("spf") or "").strip()
+        dmarc = dns_data.get("dmarc") or {}
+        dmarc_policy = str(dmarc.get("policy") or "").strip().lower()
+        has_mx = bool(dns_data.get("mx") or [])
+        has_a = bool(dns_data.get("a") or [])
+        has_aaaa = bool(dns_data.get("aaaa") or [])
+        has_mail_route = bool(has_mx or has_a or has_aaaa)
+
+        spf_strict = spf.lower().endswith("-all")
+        dmarc_none = dmarc_policy in {"", "none"}
+        if not has_mail_route:
+            continue
+        if spf_strict or not dmarc_none:
+            continue
+
+        proof = (
+            f"spf={spf or '(missing)'}; dmarc_policy={dmarc_policy or '(missing)'}; "
+            f"has_mx={has_mx}; has_a={has_a}; has_aaaa={has_aaaa}"
+        )
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": proof,
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
 def _build_ct_revocation_gap_items(db):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
@@ -3998,6 +4174,8 @@ def _build_report_items(db, report_id: str):
 
     if report_id == "no_tls13":
         rows = _build_no_tls13_items(db)
+    elif report_id == "pqc_non_compliant":
+        rows = _build_pqc_non_compliant_items(db)
     elif report_id == "legacy_ssl_enabled":
         rows = _build_legacy_ssl_items(db)
     elif report_id == "spf_not_strict":
@@ -4010,6 +4188,8 @@ def _build_report_items(db, report_id: str):
         rows = _build_weak_dkim_keys_items(db, checks_cfg=checks_cfg)
     elif report_id == "hosted_in_m365":
         rows = _build_hosted_in_m365_items(db)
+    elif report_id == "spoofable_domains_hosts":
+        rows = _build_spoofable_domains_hosts_items(db)
     elif report_id == "ct_revocation_gaps":
         rows = _build_ct_revocation_gap_items(db)
     elif report_id == "ca_issuers_used":
@@ -4036,6 +4216,9 @@ def _normalize_report_id(value: str) -> str:
     aliases = {
         "https_posture": "https_posture_issues",
         "cipher_hygiene": "cipher_hygiene_risk",
+        "pqc": "pqc_non_compliant",
+        "post_quantum": "pqc_non_compliant",
+        "spoofable": "spoofable_domains_hosts",
     }
     return aliases.get(report_id, report_id)
 

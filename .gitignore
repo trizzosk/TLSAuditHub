@@ -7,3 +7,5 @@ worker/__pycache__/diff.cpython-312.pyc
 worker/__pycache__/normalize.cpython-312.pyc
 worker/__pycache__/worker.cpython-312.pyc
 worker/celerybeat-schedule
+data/postgres/
+data/redis/

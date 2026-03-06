@@ -566,8 +566,7 @@ function activateView(viewId) {
   const viewNames = {
     authView: "Login",
     dashboardView: "Dashboard",
-    targetsView: "Hosts / Targets",
-    spoofableView: "Spoofable",
+    targetsView: "Domains / Hosts",
     reportsView: "Reports",
     jobsView: "Jobs",
     resultsView: "Results",
@@ -1850,7 +1849,8 @@ async function loadAllReportItems(reportId) {
   });
 }
 
-async function refreshReports() {
+async function refreshReports(options = {}) {
+  const rethrow = Boolean(options.rethrow);
   try {
     const reportId = String(ui.reportTypeSelect.value || "no_tls13");
     if (currentReportId !== reportId) {
@@ -1905,12 +1905,73 @@ async function refreshReports() {
     resetReportDrilldown();
     syncReportsSelectAll();
     log(`Report load failed: ${error.message}`);
+    if (rethrow) {
+      throw error;
+    }
   }
 }
 
+function setRunReportButtonState(state) {
+  const button = ui.runReportsBtn;
+  if (!button) {
+    return;
+  }
+  button.classList.remove(
+    "btn-primary",
+    "btn-warning",
+    "btn-outline-success",
+    "btn-outline-danger"
+  );
+  if (state === "loading") {
+    button.classList.add("btn-warning");
+    button.textContent = "Submitting...";
+    button.disabled = true;
+    return;
+  }
+  if (state === "success") {
+    button.classList.add("btn-outline-success");
+    button.textContent = "✓ Queued";
+    button.disabled = true;
+    return;
+  }
+  if (state === "error") {
+    button.classList.add("btn-outline-danger");
+    button.textContent = "Failed";
+    button.disabled = false;
+    return;
+  }
+  button.classList.add("btn-primary");
+  button.textContent = "Run Report";
+  button.disabled = false;
+}
+
 async function runReports() {
+  if (ui.runReportsBtn?.dataset.busy === "1") {
+    return;
+  }
+  if (ui.runReportsBtn) {
+    ui.runReportsBtn.dataset.busy = "1";
+  }
+  setRunReportButtonState("loading");
   pagination.reports.page = 1;
-  await refreshReports();
+  try {
+    await refreshReports({ rethrow: true });
+    setRunReportButtonState("success");
+    setTimeout(() => {
+      if (ui.runReportsBtn) {
+        delete ui.runReportsBtn.dataset.busy;
+      }
+      setRunReportButtonState("idle");
+    }, 1400);
+  } catch (error) {
+    setRunReportButtonState("error");
+    setTimeout(() => {
+      if (ui.runReportsBtn) {
+        delete ui.runReportsBtn.dataset.busy;
+      }
+      setRunReportButtonState("idle");
+    }, 1800);
+  }
 }
 
 async function exportReportsCsv() {
@@ -2343,10 +2404,44 @@ async function runScan(targetId) {
     const data = await apiRequest(`/targets/${targetId}/scan`, { method: "POST" });
     log(`Scan queued for target ${targetId}. Task ${data.task_id}.`);
     await Promise.all([refreshJobs(), loadDashboard()]);
-    activateView("jobsView");
+    return data;
   } catch (error) {
     log(`Run scan failed: ${error.message}`);
+    throw error;
   }
+}
+
+function setRunScanButtonState(button, state) {
+  if (!button) {
+    return;
+  }
+  button.classList.remove(
+    "btn-outline-primary",
+    "btn-warning",
+    "btn-outline-success",
+    "btn-outline-danger"
+  );
+  if (state === "loading") {
+    button.classList.add("btn-warning");
+    button.textContent = "Submitting...";
+    button.disabled = true;
+    return;
+  }
+  if (state === "success") {
+    button.classList.add("btn-outline-success");
+    button.textContent = "✓ Queued";
+    button.disabled = true;
+    return;
+  }
+  if (state === "error") {
+    button.classList.add("btn-outline-danger");
+    button.textContent = "Failed";
+    button.disabled = false;
+    return;
+  }
+  button.classList.add("btn-outline-primary");
+  button.textContent = "Run Scan";
+  button.disabled = false;
 }
 
 function closeEditTargetPanel() {
@@ -3663,7 +3758,26 @@ ui.targetsBody.addEventListener("click", (event) => {
 
   const runBtn = event.target.closest(".run-scan-btn");
   if (runBtn) {
-    runScan(runBtn.dataset.targetId);
+    if (runBtn.dataset.busy === "1") {
+      return;
+    }
+    runBtn.dataset.busy = "1";
+    setRunScanButtonState(runBtn, "loading");
+    runScan(runBtn.dataset.targetId)
+      .then(() => {
+        setRunScanButtonState(runBtn, "success");
+        setTimeout(() => {
+          delete runBtn.dataset.busy;
+          setRunScanButtonState(runBtn, "idle");
+        }, 1400);
+      })
+      .catch(() => {
+        setRunScanButtonState(runBtn, "error");
+        setTimeout(() => {
+          delete runBtn.dataset.busy;
+          setRunScanButtonState(runBtn, "idle");
+        }, 1800);
+      });
     return;
   }
 

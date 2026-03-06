@@ -303,23 +303,27 @@ def run_scan(target_id: str):
             proxy_settings=proxy_settings,
             resolved_ip=resolved_ip,
         )
+        scan_commands = {
+            ScanCommand.CERTIFICATE_INFO,
+            ScanCommand.SSL_2_0_CIPHER_SUITES,
+            ScanCommand.SSL_3_0_CIPHER_SUITES,
+            ScanCommand.TLS_1_0_CIPHER_SUITES,
+            ScanCommand.TLS_1_1_CIPHER_SUITES,
+            ScanCommand.TLS_1_2_CIPHER_SUITES,
+            ScanCommand.TLS_1_3_CIPHER_SUITES,
+            ScanCommand.HTTP_HEADERS,
+            ScanCommand.HEARTBLEED,
+            ScanCommand.ROBOT,
+            ScanCommand.SESSION_RENEGOTIATION,
+            ScanCommand.TLS_COMPRESSION,
+            ScanCommand.TLS_FALLBACK_SCSV,
+        }
+        if hasattr(ScanCommand, "ELLIPTIC_CURVES"):
+            scan_commands.add(ScanCommand.ELLIPTIC_CURVES)
+
         request = ServerScanRequest(
             server_location=server_location,
-            scan_commands={
-                ScanCommand.CERTIFICATE_INFO,
-                ScanCommand.SSL_2_0_CIPHER_SUITES,
-                ScanCommand.SSL_3_0_CIPHER_SUITES,
-                ScanCommand.TLS_1_0_CIPHER_SUITES,
-                ScanCommand.TLS_1_1_CIPHER_SUITES,
-                ScanCommand.TLS_1_2_CIPHER_SUITES,
-                ScanCommand.TLS_1_3_CIPHER_SUITES,
-                ScanCommand.HTTP_HEADERS,
-                ScanCommand.HEARTBLEED,
-                ScanCommand.ROBOT,
-                ScanCommand.SESSION_RENEGOTIATION,
-                ScanCommand.TLS_COMPRESSION,
-                ScanCommand.TLS_FALLBACK_SCSV,
-            },
+            scan_commands=scan_commands,
         )
         scanner.queue_scans([request])
 
@@ -464,6 +468,12 @@ def _extract_plugin_results(server_result, hostname, port):
 
     extracted = []
 
+    def _enum_name(value):
+        name = getattr(value, "name", None)
+        if name:
+            return str(name)
+        return str(value or "").strip()
+
     cert_attempt = server_result.scan_result.certificate_info
     if (
         cert_attempt.status == ScanCommandAttemptStatusEnum.COMPLETED
@@ -574,6 +584,38 @@ def _extract_plugin_results(server_result, hostname, port):
                     "is_protocol_supported": bool(
                         tls13_attempt.result.is_tls_version_supported
                     ),
+                },
+            )
+        )
+
+    curve_attempt = getattr(server_result.scan_result, "elliptic_curves", None)
+    if curve_attempt is not None and curve_attempt.result is not None:
+        groups = []
+        seen = set()
+        for attr_name in (
+            "supported_curves",
+            "accepted_curves",
+            "supported_groups",
+            "accepted_groups",
+            "curves",
+        ):
+            values = getattr(curve_attempt.result, attr_name, None) or []
+            for value in values:
+                name = _enum_name(value)
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                groups.append(name)
+
+        extracted.append(
+            (
+                "elliptic_curves",
+                {
+                    "supported_groups": groups,
+                    "groups_count": len(groups),
                 },
             )
         )
