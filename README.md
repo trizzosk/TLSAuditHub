@@ -42,6 +42,9 @@ Change the default password immediately after first login.
 - UI source is in `ui/`.
 - The login form is shown until authenticated.
 - DNS data is collected in the background when targets are added.
+- Recommended DKIM selector lists are available in:
+  - `docs/dkim-selectors-recommended.txt` (one selector per line)
+  - `docs/dkim-selectors-recommended.csv` (`rank,selector`)
 
 ## Disclaimer
 TLSAuditHub is provided "as is", without warranties of any kind, express or implied, including (without limitation) warranties of merchantability, fitness for a particular purpose, and non-infringement.
