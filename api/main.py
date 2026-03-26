@@ -3810,6 +3810,13 @@ def _build_hosted_in_m365_items(db):
         signals = m365.get("signals") or []
         tenant_hints = m365.get("tenant_hints") or []
         ms_tokens = m365.get("ms_verification_tokens") or []
+        identity = m365.get("identity") or {}
+        identity_tenant_id = str(identity.get("tenant_id") or "").strip()
+        identity_namespace_type = str(identity.get("namespace_type") or "").strip()
+        identity_domain_checked = str(identity.get("domain_checked") or "").strip()
+        identity_cloud_instance = str(identity.get("cloud_instance_name") or "").strip()
+        identity_tenant_region = str(identity.get("tenant_region_scope") or "").strip()
+        identity_federation_brand = str(identity.get("federation_brand_name") or "").strip()
         proof_parts = [
             "m365_hosted=true",
             f"tenant_assigned={tenant_assigned}",
@@ -3824,6 +3831,18 @@ def _build_hosted_in_m365_items(db):
                 "ms_verification="
                 + ",".join(f"MS={str(v)}" for v in ms_tokens[:5])
             )
+        if identity_tenant_id:
+            proof_parts.append(f"tenant_id={identity_tenant_id}")
+        if identity_namespace_type:
+            proof_parts.append(f"namespace_type={identity_namespace_type}")
+        if identity_domain_checked:
+            proof_parts.append(f"identity_domain={identity_domain_checked}")
+        if identity_cloud_instance:
+            proof_parts.append(f"cloud_instance={identity_cloud_instance}")
+        if identity_tenant_region:
+            proof_parts.append(f"tenant_region={identity_tenant_region}")
+        if identity_federation_brand:
+            proof_parts.append(f"federation_brand={identity_federation_brand}")
         if signals:
             proof_parts.append("signals=" + "; ".join(str(v) for v in signals[:3]))
         items.append(
@@ -4264,6 +4283,8 @@ def list_jobs(
                   s.target_id,
                   t.hostname,
                   t.port,
+                  t.dns_checks_enabled,
+                  t.tls_checks_enabled,
                   s.started_at,
                   s.finished_at,
                   s.status,
@@ -4281,6 +4302,40 @@ def list_jobs(
             "items": [dict(r._mapping) for r in rows],
             "total": total,
         }
+    finally:
+        db.close()
+
+
+@app.delete("/jobs/{scan_id}")
+def delete_job(scan_id: UUID, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text("SELECT id FROM scans WHERE id=:sid"),
+            {"sid": str(scan_id)},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Result not found")
+
+        db.execute(
+            text(
+                """
+                DELETE FROM scan_diffs
+                WHERE old_scan_id=:sid OR new_scan_id=:sid
+                """
+            ),
+            {"sid": str(scan_id)},
+        )
+        db.execute(
+            text("DELETE FROM scan_results WHERE scan_id=:sid"),
+            {"sid": str(scan_id)},
+        )
+        db.execute(
+            text("DELETE FROM scans WHERE id=:sid"),
+            {"sid": str(scan_id)},
+        )
+        db.commit()
+        return {"status": "deleted", "scan_id": str(scan_id)}
     finally:
         db.close()
 

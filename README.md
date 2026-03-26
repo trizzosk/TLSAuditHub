@@ -13,38 +13,58 @@ TLSAuditHub is a lightweight platform for auditing SSL/TLS posture across servic
 
 The core TLS scanning engine is [`sslyze`](https://github.com/nabla-c0d3/sslyze).
 
-## Functions
-- local/OIDC/LDAP authentication
-- target inventory and on-demand scans
-- scheduled scanning with job history
-- TLS results and diff tracking
-- DNS posture data (SPF/DMARC/DKIM/WHOIS/NS/MX)
-- built-in reports for TLS and mail-security posture
-- SMTP CSV export of report findings
-- admin controls for users/auth/proxy/scheduler/SMTP/DKIM
+## Vibe-Coded Project Note
+This tool is vibe coded and community-driven. It is practical and fast-moving by design, and improvements are expected over time.
 
-## Quick Start
-1. `docker compose up`
-2. Open `http://localhost:5173`
+## Requirements And Deployment (Simple)
+### Requirements
+- Docker Engine
+- Docker Compose
+- Open ports `5173` (UI) and `8000` (API)
+
+### Quick Start In 60 Seconds
+1. Start services:
+   - `docker compose up`
+2. Open UI:
+   - `http://localhost:5173`
 3. Log in with default admin account:
    - Username: `Adm$n`
    - Password: `Cr!mson$Nebula_7#Qx`
 
-Change the default password immediately after first login.
+### Security Notice
+- Change the default admin password immediately after first login.
+- Do not expose the stack publicly before changing credentials and hardening access.
 
-## Documentation
-- [Deployment](/Users/trizzo/Development/TLSAuditHub/docs/deployment.md)
-- [DNS And DKIM](/Users/trizzo/Development/TLSAuditHub/docs/dns-and-dkim.md)
-- [Authentication](/Users/trizzo/Development/TLSAuditHub/docs/authentication.md)
-- [Reports And SMTP](/Users/trizzo/Development/TLSAuditHub/docs/reports-and-smtp.md)
+## Usage (Simple)
+1. Add domains/hosts in `Domains / Hosts`.
+2. Trigger scans (`Run Scan`) or wait for scheduler runs.
+3. Review findings in `Results` and `Reports`.
+4. Use Admin pages for auth/proxy/scheduler/SMTP/DKIM/check policies.
 
-## Notes
-- UI source is in `ui/`.
-- The login form is shown until authenticated.
-- DNS data is collected in the background when targets are added.
-- Recommended DKIM selector lists are available in:
-  - `docs/dkim-selectors-recommended.txt` (one selector per line)
-  - `docs/dkim-selectors-recommended.csv` (`rank,selector`)
+## Troubleshooting
+- UI looks stale after update:
+  - hard refresh (`Cmd+Shift+R` on macOS, `Ctrl+Shift+R` on Windows/Linux).
+- Services not healthy:
+  - `docker compose ps`
+  - `docker compose logs ui api worker scheduler --tail=200`
+- Scan data missing:
+  - verify target has TLS checks enabled.
+  - verify worker is up.
+- DNS/M365 details missing:
+  - trigger DNS refresh (or wait for background collection).
+  - check resolver/proxy/network reachability.
+
+## Geeks-Nerds Section
+Advanced topics and deployment variants live in dedicated docs pages:
+
+- [Deployment](docs/deployment.md)
+- [Authentication](docs/authentication.md)
+- [DNS And DKIM](docs/dns-and-dkim.md)
+- [Reports And SMTP](docs/reports-and-smtp.md)
+
+Recommended DKIM selector lists:
+- `docs/dkim-selectors-recommended.txt`
+- `docs/dkim-selectors-recommended.csv`
 
 ## Disclaimer
 TLSAuditHub is provided "as is", without warranties of any kind, express or implied, including (without limitation) warranties of merchantability, fitness for a particular purpose, and non-infringement.

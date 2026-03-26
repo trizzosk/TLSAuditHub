@@ -1245,6 +1245,191 @@ def _extract_m365_tenant_hint_from_mx(mx_exchange):
     return prefix
 
 
+def _extract_tenant_id_from_microsoft_url(value):
+    text_value = str(value or "").strip()
+    if not text_value:
+        return ""
+    match = re.search(
+        r"/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:/|$)",
+        text_value,
+    )
+    if not match:
+        return ""
+    return match.group(1).lower()
+
+
+def _fetch_json_url(url, timeout_seconds=6):
+    target = str(url or "").strip()
+    meta = {
+        "ok": False,
+        "url": target,
+        "status_code": None,
+        "error_code": "",
+        "error": "",
+    }
+    if not target:
+        meta["error_code"] = "EMPTY_URL"
+        meta["error"] = "empty_url"
+        return {}, meta
+
+    request = Request(
+        target,
+        method="GET",
+        headers={
+            "User-Agent": "TLSAuditHub/1.0",
+            "Accept": "application/json",
+        },
+    )
+    body_text = ""
+    status_code = None
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            status_code = int(response.getcode())
+            body_text = response.read().decode("utf-8", "ignore")
+    except HTTPError as exc:
+        status_code = int(exc.code)
+        try:
+            body_text = exc.read().decode("utf-8", "ignore")
+        except Exception:
+            body_text = ""
+    except URLError as exc:
+        meta["error_code"] = "URL_ERROR"
+        meta["error"] = str(getattr(exc, "reason", exc) or exc)
+        return {}, meta
+    except Exception as exc:
+        meta["error_code"] = exc.__class__.__name__.upper()
+        meta["error"] = str(exc)
+        return {}, meta
+
+    meta["status_code"] = status_code
+    if not body_text:
+        meta["error_code"] = "EMPTY_BODY"
+        meta["error"] = "empty_response_body"
+        return {}, meta
+
+    try:
+        payload = json.loads(body_text)
+    except Exception as exc:
+        meta["error_code"] = "INVALID_JSON"
+        meta["error"] = str(exc)
+        return {}, meta
+
+    if 200 <= int(status_code or 0) < 300:
+        meta["ok"] = True
+    else:
+        meta["error_code"] = f"HTTP_{status_code}"
+        meta["error"] = str(payload.get("error_description") or payload.get("error") or "http_error")
+    return payload, meta
+
+
+def _fetch_openid_metadata_for_domain(domain):
+    checked_domain = str(domain or "").strip().lower()
+    url = (
+        "https://login.microsoftonline.com/"
+        f"{urllib.parse.quote(checked_domain, safe='')}"
+        "/v2.0/.well-known/openid-configuration"
+    )
+    payload, meta = _fetch_json_url(url)
+    issuer = str(payload.get("issuer") or "").strip()
+    token_endpoint = str(payload.get("token_endpoint") or "").strip()
+    authorization_endpoint = str(payload.get("authorization_endpoint") or "").strip()
+    tenant_id = (
+        _extract_tenant_id_from_microsoft_url(issuer)
+        or _extract_tenant_id_from_microsoft_url(token_endpoint)
+        or _extract_tenant_id_from_microsoft_url(authorization_endpoint)
+    )
+    return {
+        "domain_checked": checked_domain,
+        "tenant_id": tenant_id,
+        "issuer": issuer,
+        "authorization_endpoint": authorization_endpoint,
+        "token_endpoint": token_endpoint,
+        "cloud_instance_name": str(payload.get("cloud_instance_name") or "").strip(),
+        "tenant_region_scope": str(payload.get("tenant_region_scope") or "").strip(),
+        "tenant_region_sub_scope": str(payload.get("tenant_region_sub_scope") or "").strip(),
+        "query": meta,
+    }
+
+
+def _fetch_user_realm_for_domain(domain):
+    checked_domain = str(domain or "").strip().lower()
+    probe_login = f"tlsaudithub-probe@{checked_domain}"
+    query = urllib.parse.urlencode({"login": probe_login, "xml": "0"})
+    url = f"https://login.microsoftonline.com/GetUserRealm.srf?{query}"
+    payload, meta = _fetch_json_url(url)
+    return {
+        "domain_checked": checked_domain,
+        "domain_name": str(payload.get("DomainName") or "").strip(),
+        "namespace_type": str(payload.get("NameSpaceType") or "").strip(),
+        "federation_brand_name": str(payload.get("FederationBrandName") or "").strip(),
+        "auth_url": str(payload.get("AuthURL") or "").strip(),
+        "federation_metadata_url": str(payload.get("FederationMetadataUrl") or "").strip(),
+        "cloud_instance_name": str(payload.get("CloudInstanceName") or "").strip(),
+        "query": meta,
+    }
+
+
+def _discover_m365_identity(hostname):
+    variants = _candidate_domain_variants(hostname)
+    if not variants:
+        return {
+            "domain_checked": "",
+            "tenant_id": "",
+            "issuer": "",
+            "authorization_endpoint": "",
+            "token_endpoint": "",
+            "cloud_instance_name": "",
+            "tenant_region_scope": "",
+            "tenant_region_sub_scope": "",
+            "namespace_type": "",
+            "federation_brand_name": "",
+            "auth_url": "",
+            "federation_metadata_url": "",
+            "openid_query": {"ok": False, "error_code": "SKIPPED_EMPTY_HOST", "error": "hostname empty"},
+            "user_realm_query": {"ok": False, "error_code": "SKIPPED_EMPTY_HOST", "error": "hostname empty"},
+        }
+
+    best = None
+    best_score = -1
+    for domain in variants:
+        openid = _fetch_openid_metadata_for_domain(domain)
+        user_realm = _fetch_user_realm_for_domain(domain)
+        tenant_id = str(openid.get("tenant_id") or "").strip()
+        namespace_type = str(user_realm.get("namespace_type") or "").strip()
+        score = 0
+        if openid.get("query", {}).get("ok"):
+            score += 2
+        if user_realm.get("query", {}).get("ok"):
+            score += 2
+        if tenant_id:
+            score += 3
+        if namespace_type:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best = {
+                "domain_checked": str(openid.get("domain_checked") or domain),
+                "tenant_id": tenant_id,
+                "issuer": str(openid.get("issuer") or ""),
+                "authorization_endpoint": str(openid.get("authorization_endpoint") or ""),
+                "token_endpoint": str(openid.get("token_endpoint") or ""),
+                "cloud_instance_name": str(
+                    openid.get("cloud_instance_name")
+                    or user_realm.get("cloud_instance_name")
+                    or ""
+                ),
+                "tenant_region_scope": str(openid.get("tenant_region_scope") or ""),
+                "tenant_region_sub_scope": str(openid.get("tenant_region_sub_scope") or ""),
+                "namespace_type": namespace_type,
+                "federation_brand_name": str(user_realm.get("federation_brand_name") or ""),
+                "auth_url": str(user_realm.get("auth_url") or ""),
+                "federation_metadata_url": str(user_realm.get("federation_metadata_url") or ""),
+                "openid_query": openid.get("query") or {},
+                "user_realm_query": user_realm.get("query") or {},
+            }
+    return best or {}
+
+
 def _detect_m365_hosting(
     hostname, spf_record, txt_records, mx_records, resolver, attempts
 ):
@@ -1301,6 +1486,20 @@ def _detect_m365_hosting(
         tenant_assigned = True
         score += 1
 
+    identity = _discover_m365_identity(host)
+    identity_tenant_id = str(identity.get("tenant_id") or "").strip()
+    identity_namespace_type = str(identity.get("namespace_type") or "").strip()
+    identity_domain_checked = str(identity.get("domain_checked") or "").strip()
+    if identity_tenant_id:
+        signals.append(f"tenant_id={identity_tenant_id}")
+        tenant_assigned = True
+        score += 2
+    if identity_namespace_type:
+        signals.append(f"identity_namespace_type={identity_namespace_type}")
+        score += 1
+    if identity_domain_checked:
+        signals.append(f"identity_domain_checked={identity_domain_checked}")
+
     autodiscover_host = f"autodiscover.{host}" if host else ""
     autodiscover_target = ""
     autodiscover_meta = {
@@ -1343,6 +1542,7 @@ def _detect_m365_hosting(
         "tenant_hints": tenant_hints,
         "ms_verification_tokens": ms_verification_tokens,
         "mx_outlook_hosts": outlook_mx_hosts,
+        "identity": identity,
         "autodiscover": {
             "name": autodiscover_host,
             "target": autodiscover_target,
@@ -1663,6 +1863,22 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
             "tenant_hints": [],
             "ms_verification_tokens": [],
             "mx_outlook_hosts": [],
+            "identity": {
+                "domain_checked": "",
+                "tenant_id": "",
+                "issuer": "",
+                "authorization_endpoint": "",
+                "token_endpoint": "",
+                "cloud_instance_name": "",
+                "tenant_region_scope": "",
+                "tenant_region_sub_scope": "",
+                "namespace_type": "",
+                "federation_brand_name": "",
+                "auth_url": "",
+                "federation_metadata_url": "",
+                "openid_query": {},
+                "user_realm_query": {},
+            },
             "autodiscover": {
                 "name": "",
                 "target": "",

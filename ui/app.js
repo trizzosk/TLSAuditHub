@@ -5,6 +5,7 @@ const ui = {
   authUsername: document.getElementById("authUsername"),
   authPassword: document.getElementById("authPassword"),
   loginBtn: document.getElementById("loginBtn"),
+  loginStatus: document.getElementById("loginStatus"),
   loginOidcBtn: document.getElementById("loginOidcBtn"),
   loginOidcHint: document.getElementById("loginOidcHint"),
   logoutBtn: document.getElementById("logoutBtn"),
@@ -93,6 +94,12 @@ const ui = {
   jobsPageInfo: document.getElementById("jobsPageInfo"),
   selectedResultScanId: document.getElementById("selectedResultScanId"),
   jobResultsPanel: document.getElementById("jobResultsPanel"),
+  refreshResultsListBtn: document.getElementById("refreshResultsListBtn"),
+  resultsListBody: document.getElementById("resultsListBody"),
+  resultsPageSize: document.getElementById("resultsPageSize"),
+  resultsPrevBtn: document.getElementById("resultsPrevBtn"),
+  resultsNextBtn: document.getElementById("resultsNextBtn"),
+  resultsPageInfo: document.getElementById("resultsPageInfo"),
   proxyForm: document.getElementById("proxyForm"),
   proxyEnabled: document.getElementById("proxyEnabled"),
   proxyHost: document.getElementById("proxyHost"),
@@ -211,6 +218,7 @@ const SESSION_USER_KEY = "tlsaudithub_username";
 const pagination = {
   targets: { page: 1, pageSize: 10, total: 0 },
   jobs: { page: 1, pageSize: 10, total: 0 },
+  results: { page: 1, pageSize: 5, total: 0 },
   spoofable: { page: 1, pageSize: 10, total: 0 },
   reports: { page: 1, pageSize: 10, total: 0 },
   eventLogs: { page: 1, pageSize: 15, total: 0 },
@@ -219,6 +227,7 @@ let targetsSearchText = "";
 let currentReportMeta = null;
 let currentReportItems = [];
 let currentReportId = "";
+let activeResultScanId = "";
 const selectedReportTargetIds = new Set();
 let selectedReportRowKey = "";
 let activeAdminPage = "adminUsersPage";
@@ -353,6 +362,72 @@ function setUserCreateStatus(message = "", type = "") {
   }
 }
 
+function setLoginStatus(message = "", type = "") {
+  if (!ui.loginStatus) {
+    return;
+  }
+  ui.loginStatus.textContent = message || "";
+  ui.loginStatus.classList.remove("hidden", "form-hint-error", "form-hint-success");
+  if (!message) {
+    ui.loginStatus.classList.add("hidden");
+    return;
+  }
+  if (type === "error") {
+    ui.loginStatus.classList.add("form-hint-error");
+  } else if (type === "success") {
+    ui.loginStatus.classList.add("form-hint-success");
+  }
+}
+
+function parseApiErrorDetails(rawText) {
+  if (!rawText) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(rawText);
+    if (typeof parsed?.detail === "string" && parsed.detail.trim()) {
+      return parsed.detail.trim();
+    }
+    if (Array.isArray(parsed?.detail)) {
+      const joined = parsed.detail
+        .map((item) => {
+          if (typeof item === "string") {
+            return item.trim();
+          }
+          if (item && typeof item.msg === "string") {
+            return item.msg.trim();
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("; ");
+      if (joined) {
+        return joined;
+      }
+    }
+  } catch (_err) {
+    // Non-JSON response body.
+  }
+  return rawText.trim();
+}
+
+function getLoginErrorMessage(error) {
+  const raw = String(error?.message || "").trim();
+  if (!raw) {
+    return "Authentication failed. Please try again.";
+  }
+  if (/failed to fetch|networkerror|load failed|network request failed/i.test(raw)) {
+    return "Authentication API is unreachable. Check server/API connectivity and try again.";
+  }
+  const bodyIndex = raw.indexOf(":");
+  const details = bodyIndex >= 0 ? raw.slice(bodyIndex + 1).trim() : "";
+  const parsedDetails = parseApiErrorDetails(details);
+  if (parsedDetails) {
+    return `Authentication failed: ${parsedDetails}`;
+  }
+  return `Authentication failed: ${raw}`;
+}
+
 function persistSession(token, username) {
   try {
     if (token) {
@@ -440,6 +515,7 @@ async function apiRequest(path, options = {}) {
 
 async function login(event) {
   event.preventDefault();
+  setLoginStatus("");
   const username = ui.authUsername.value.trim();
   const password = ui.authPassword.value;
   const formData = new URLSearchParams();
@@ -453,6 +529,7 @@ async function login(event) {
       body: formData,
     });
     setToken(data.access_token, username);
+    setLoginStatus("");
     await loadCurrentUserProfile();
     ui.authPassword.value = "";
     log(`Login successful for ${username}.`);
@@ -463,11 +540,13 @@ async function login(event) {
     }
   } catch (error) {
     setToken("");
+    setLoginStatus(getLoginErrorMessage(error), "error");
     log(`Login failed: ${error.message}`);
   }
 }
 
 function startOidcLogin() {
+  setLoginStatus("");
   const uiRedirect = `${window.location.origin}${window.location.pathname}`;
   const query = new URLSearchParams();
   query.set("ui_redirect", uiRedirect);
@@ -526,6 +605,9 @@ async function loadAuthMethod() {
       method: "GET",
     });
     if (!response.ok) {
+      if (!accessToken) {
+        setLoginStatus("Authentication API error. Login options may be limited.", "error");
+      }
       applyPublicAuthConfig({
         active_method: "local",
         password_login_enabled: true,
@@ -536,7 +618,13 @@ async function loadAuthMethod() {
     const text = await response.text();
     const data = text ? JSON.parse(text) : {};
     applyPublicAuthConfig(data);
+    if (!accessToken) {
+      setLoginStatus("");
+    }
   } catch (_error) {
+    if (!accessToken) {
+      setLoginStatus("Authentication API is unreachable. Please try again later.", "error");
+    }
     applyPublicAuthConfig({
       active_method: "local",
       password_login_enabled: true,
@@ -552,6 +640,7 @@ function logout() {
 }
 
 function showResultsSelectionPrompt() {
+  activeResultScanId = "";
   ui.selectedResultScanId.textContent = "";
   ui.jobResultsPanel.classList.add("muted");
   ui.jobResultsPanel.innerHTML = `
@@ -601,6 +690,9 @@ function activateView(viewId) {
     !ui.selectedResultScanId.textContent.trim()
   ) {
     showResultsSelectionPrompt();
+  }
+  if (viewId === "resultsView") {
+    refreshResultsList();
   }
   if (viewId === "reportsView") {
     refreshReports();
@@ -1333,6 +1425,25 @@ function renderDnsData(targetLabel, payload) {
   const m365TenantAssigned = Boolean(m365.tenant_assigned);
   const m365ServiceUsage = Boolean(m365.service_usage);
   const m365Autodiscover = m365.autodiscover || {};
+  const m365Identity = m365.identity || {};
+  const m365IdentityTenantId = String(m365Identity.tenant_id || "").trim();
+  const m365IdentityNamespaceType = String(
+    m365Identity.namespace_type || ""
+  ).trim();
+  const m365IdentityDomainChecked = String(
+    m365Identity.domain_checked || ""
+  ).trim();
+  const m365IdentityBrand = String(
+    m365Identity.federation_brand_name || ""
+  ).trim();
+  const m365IdentityCloud = String(
+    m365Identity.cloud_instance_name || ""
+  ).trim();
+  const m365IdentityIssuer = String(m365Identity.issuer || "").trim();
+  const m365IdentityAuthUrl = String(m365Identity.auth_url || "").trim();
+  const m365IdentityTenantRegion = String(
+    m365Identity.tenant_region_scope || ""
+  ).trim();
   const dkimPresent = dkimRecords.length > 0;
   const spfPresent = Boolean(data.spf);
   const dmarcPresent = Boolean(dmarc.record);
@@ -1447,6 +1558,38 @@ function renderDnsData(targetLabel, payload) {
           m365MsTokens.length ? m365MsTokens.map((v) => `MS=${v}`).join(", ") : "-",
           m365MsTokens.length ? "good" : "warn"
         )}</dd>
+        <dt>Tenant ID</dt><dd class="tiny-mono">${sevBadge(
+          m365IdentityTenantId || "-",
+          m365IdentityTenantId ? "good" : "warn"
+        )}</dd>
+        <dt>Identity Domain</dt><dd class="tiny-mono">${sevBadge(
+          m365IdentityDomainChecked || "-",
+          m365IdentityDomainChecked ? "good" : "warn"
+        )}</dd>
+        <dt>Identity Namespace</dt><dd>${sevBadge(
+          m365IdentityNamespaceType || "-",
+          m365IdentityNamespaceType ? "good" : "warn"
+        )}</dd>
+        <dt>Tenant Brand</dt><dd>${sevBadge(
+          m365IdentityBrand || "-",
+          m365IdentityBrand ? "good" : "warn"
+        )}</dd>
+        <dt>Cloud Instance</dt><dd>${sevBadge(
+          m365IdentityCloud || "-",
+          m365IdentityCloud ? "good" : "warn"
+        )}</dd>
+        <dt>Tenant Region</dt><dd>${sevBadge(
+          m365IdentityTenantRegion || "-",
+          m365IdentityTenantRegion ? "good" : "warn"
+        )}</dd>
+        <dt>Issuer</dt><dd class="tiny-mono">${sevBadge(
+          m365IdentityIssuer || "-",
+          m365IdentityIssuer ? "good" : "warn"
+        )}</dd>
+        <dt>Federation Auth URL</dt><dd class="tiny-mono">${sevBadge(
+          m365IdentityAuthUrl || "-",
+          m365IdentityAuthUrl ? "good" : "warn"
+        )}</dd>
         <dt>Autodiscover CNAME</dt><dd class="tiny-mono">${sevBadge(
           m365Autodiscover.target || "-",
           m365Autodiscover.target ? "good" : "warn"
@@ -1552,6 +1695,106 @@ function renderJobs(jobs) {
       }
     )
     .join("");
+}
+
+function scanTypeLabelForJob(job) {
+  const tlsEnabled = Boolean(job?.tls_checks_enabled);
+  const dnsEnabled = Boolean(job?.dns_checks_enabled);
+  if (tlsEnabled && dnsEnabled) {
+    return "TLS + DNS";
+  }
+  if (tlsEnabled) {
+    return "TLS";
+  }
+  if (dnsEnabled) {
+    return "DNS";
+  }
+  return "Unknown";
+}
+
+function renderResultsList(items) {
+  if (!ui.resultsListBody) {
+    return;
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    ui.resultsListBody.innerHTML =
+      "<tr><td colspan='5' class='muted'>No results found</td></tr>";
+    return;
+  }
+  ui.resultsListBody.innerHTML = items
+    .map((job) => {
+      const scanId = escapeHtml(String(job.id || ""));
+      const hostLabel = escapeHtml(
+        `${job.hostname ?? "Unknown"}${job.port ? `:${job.port}` : ""}`
+      );
+      const status = escapeHtml(String(job.status || "-"));
+      const scanType = escapeHtml(scanTypeLabelForJob(job));
+      const isSelected = activeResultScanId && String(job.id) === String(activeResultScanId);
+      const rowClass = isSelected ? "table-active" : "";
+      return `
+        <tr class="${rowClass}">
+          <td>${hostLabel}</td>
+          <td>${scanType}</td>
+          <td>${fmtDate(job.started_at)}</td>
+          <td>${status}</td>
+          <td>
+            <div class="users-actions">
+              <button data-scan-id="${scanId}" class="show-result-btn btn btn-sm btn-outline-primary" type="button">Show</button>
+              <button data-scan-id="${scanId}" class="delete-result-btn btn btn-sm btn-outline-danger" type="button">Delete</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+async function refreshResultsList() {
+  try {
+    pagination.results.pageSize = getPageSize(ui.resultsPageSize, 5);
+    const limit = pagination.results.pageSize;
+    const offset =
+      limit > 0 ? (pagination.results.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/jobs?${query.toString()}`, { method: "GET" });
+    pagination.results.total = data.total ?? 0;
+    updatePaginationUI("results", {
+      prevBtn: ui.resultsPrevBtn,
+      nextBtn: ui.resultsNextBtn,
+      pageInfo: ui.resultsPageInfo,
+    });
+    renderResultsList(Array.isArray(data.items) ? data.items : []);
+  } catch (error) {
+    if (ui.resultsListBody) {
+      ui.resultsListBody.innerHTML = `<tr><td colspan='5' class='muted'>Results list load failed: ${escapeHtml(
+        error.message
+      )}</td></tr>`;
+    }
+    log(`Results list load failed: ${error.message}`);
+  }
+}
+
+async function deleteResult(scanId) {
+  const id = String(scanId || "").trim();
+  if (!id) {
+    return;
+  }
+  if (!window.confirm(`Delete result ${id}? This action cannot be undone.`)) {
+    return;
+  }
+  try {
+    await apiRequest(`/jobs/${id}`, { method: "DELETE" });
+    if (activeResultScanId === id) {
+      showResultsSelectionPrompt();
+    }
+    await Promise.all([refreshResultsList(), refreshJobs(), loadDashboard()]);
+    log(`Deleted result ${id}.`);
+  } catch (error) {
+    log(`Delete result failed: ${error.message}`);
+  }
 }
 
 function evaluateSpoofable(spf, dmarcPolicy, hasMx, hasA, hasAaaa) {
@@ -2645,7 +2888,9 @@ async function loadJobResults(scanId) {
     ui.selectedResultScanId.textContent = scanId
       ? `for ${hostLabel} (JOB ID:${scanId})`
       : "";
+    activeResultScanId = String(scanId || "");
     renderJobResults(data);
+    refreshResultsList();
     activateView("resultsView");
     log(`Loaded results for job ${scanId}.`);
   } catch (error) {
@@ -3480,6 +3725,7 @@ async function refreshAll() {
     ["targets", refreshTargets],
     ["spoofable", refreshSpoofable],
     ["jobs", refreshJobs],
+    ["results", refreshResultsList],
   ];
   if (currentUserIsAdmin) {
     tasks.push(["users", refreshUsers]);
@@ -3526,6 +3772,11 @@ ui.reportEmailPanel.addEventListener("click", (event) => {
 ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
 ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
+ui.refreshResultsListBtn?.addEventListener("click", refreshResultsList);
+ui.resultsPageSize?.addEventListener("change", () => {
+  pagination.results.page = 1;
+  refreshResultsList();
+});
 ui.loginForm.addEventListener("submit", login);
 ui.loginOidcBtn.addEventListener("click", () => {
   if (!oidcEnabled) {
@@ -3533,6 +3784,8 @@ ui.loginOidcBtn.addEventListener("click", () => {
   }
   startOidcLogin();
 });
+ui.authUsername.addEventListener("input", () => setLoginStatus(""));
+ui.authPassword.addEventListener("input", () => setLoginStatus(""));
 ui.logoutBtn.addEventListener("click", logout);
 ui.authConfigForm.addEventListener("submit", saveAuthConfig);
 ui.reloadAuthBtn.addEventListener("click", loadAuthConfig);
@@ -3650,6 +3903,14 @@ ui.jobsPrevBtn.addEventListener("click", () => {
 ui.jobsNextBtn.addEventListener("click", () => {
   pagination.jobs.page += 1;
   refreshJobs();
+});
+ui.resultsPrevBtn?.addEventListener("click", () => {
+  pagination.results.page = Math.max(1, pagination.results.page - 1);
+  refreshResultsList();
+});
+ui.resultsNextBtn?.addEventListener("click", () => {
+  pagination.results.page += 1;
+  refreshResultsList();
 });
 ui.spoofablePrevBtn.addEventListener("click", () => {
   pagination.spoofable.page = Math.max(1, pagination.spoofable.page - 1);
@@ -3809,6 +4070,17 @@ ui.jobResultsPanel.addEventListener("click", (event) => {
   }
   activateView("jobsView");
 });
+ui.resultsListBody?.addEventListener("click", (event) => {
+  const showBtn = event.target.closest(".show-result-btn");
+  if (showBtn) {
+    loadJobResults(showBtn.dataset.scanId);
+    return;
+  }
+  const deleteBtn = event.target.closest(".delete-result-btn");
+  if (deleteBtn) {
+    deleteResult(deleteBtn.dataset.scanId);
+  }
+});
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
@@ -3826,12 +4098,14 @@ const persisted = loadPersistedSession();
 const oidcHashPayload = readAuthHashPayload();
 if (oidcHashPayload?.appToken) {
   setToken(oidcHashPayload.appToken, oidcHashPayload.username);
+  setLoginStatus("");
   log(`OpenID login successful for ${oidcHashPayload.username}.`);
 } else if (oidcHashPayload?.oidcError) {
   setToken("");
   const extra = oidcHashPayload.oidcErrorDescription
     ? ` (${oidcHashPayload.oidcErrorDescription})`
     : "";
+  setLoginStatus(`OpenID login failed: ${oidcHashPayload.oidcError}${extra}`, "error");
   log(`OpenID login failed: ${oidcHashPayload.oidcError}${extra}`);
 } else {
   setToken(persisted.token, persisted.username);
