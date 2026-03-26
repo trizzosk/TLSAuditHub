@@ -2,10 +2,19 @@
 
 ## Available report IDs
 - `no_tls13`
+- `pqc_non_compliant`
 - `legacy_ssl_enabled`
 - `spf_not_strict`
 - `missing_hsts`
 - `missing_dmarc_policy`
+- `weak_dkim_keys`
+- `hosted_in_m365`
+- `spoofable_domains_hosts`
+- `authoritative_dns_health`
+- `reputation_blacklist`
+- `ct_revocation_gaps`
+- `ca_issuers_used`
+- `wildcard_certs_in_use`
 - `https_posture_issues`
 - `cipher_hygiene_risk`
 

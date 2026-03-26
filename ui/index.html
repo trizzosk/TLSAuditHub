@@ -32,6 +32,7 @@
         <button class="menu-item btn" data-view="reportsView" type="button">Reports</button>
         <button class="menu-item btn" data-view="jobsView" type="button">Jobs</button>
         <button class="menu-item btn" data-view="resultsView" type="button">Results</button>
+        <button class="menu-item btn" data-view="certificatesView" type="button">Certificates</button>
         <button class="menu-item btn" data-view="adminView" type="button">Admin</button>
       </nav>
     </aside>
@@ -332,6 +333,8 @@
                   <option value="weak_dkim_keys">Hosts With Weak DKIM RSA Keys</option>
                   <option value="hosted_in_m365">Hosts Detected As Microsoft 365-Hosted</option>
                   <option value="spoofable_domains_hosts">Spoofable Domains/Hosts</option>
+                  <option value="authoritative_dns_health">Hosts With Authoritative DNS Health Issues</option>
+                  <option value="reputation_blacklist">Hosts/IPs Listed On Reputation Blocklists</option>
                 </select>
               </div>
               <div class="form-field reports-run-field">
@@ -500,6 +503,55 @@
           <div class="card-body">
             <h3 class="h5">Selected Job Result <span id="selectedResultScanId" class="muted"></span></h3>
             <div id="jobResultsPanel" class="results-panel muted">Select "Results" from a job row.</div>
+          </div>
+        </section>
+      </section>
+
+      <section id="certificatesView" class="view">
+        <section class="card shadow-sm">
+          <div class="card-body">
+            <div class="section-header">
+              <h3 class="h5 mb-0">Certificates</h3>
+              <button id="refreshCertificatesBtn" class="btn btn-outline-primary btn-sm" type="button">Refresh Certificates</button>
+            </div>
+            <div class="table-wrap mt-3">
+              <table class="table table-hover align-middle">
+                <thead>
+                  <tr>
+                    <th scope="col">Target / Host</th>
+                    <th scope="col">CN</th>
+                    <th scope="col">SANs</th>
+                    <th scope="col">Issuer</th>
+                    <th scope="col">Not Before</th>
+                    <th scope="col">Not After</th>
+                    <th scope="col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="certificatesBody">
+                  <tr><td colspan="7" class="muted">No certificate data loaded</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="table-controls">
+              <label for="certificatesPageSize">Rows</label>
+              <select id="certificatesPageSize" class="form-select form-select-sm">
+                <option value="10" selected>10</option>
+                <option value="15">15</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="0">All</option>
+              </select>
+              <button id="certificatesPrevBtn" class="btn btn-outline-secondary btn-sm" type="button">Prev</button>
+              <span id="certificatesPageInfo" class="muted">Page 1 of 1</span>
+              <button id="certificatesNextBtn" class="btn btn-outline-secondary btn-sm" type="button">Next</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card shadow-sm mt-3">
+          <div class="card-body">
+            <h3 class="h5">Certificate Details <span id="certificateDetailsTarget" class="muted"></span></h3>
+            <div id="certificateDetailsPanel" class="results-panel muted">Select "Show Details" from a certificate row.</div>
           </div>
         </section>
       </section>

@@ -1179,6 +1179,364 @@ def _resolve_host_ips(hostname):
     return addresses, {"ok": True, "error_code": "", "error": ""}
 
 
+def _reverse_ipv4_for_dnsbl(ip_value):
+    try:
+        ip_obj = ipaddress.ip_address(str(ip_value or "").strip())
+    except Exception:
+        return ""
+    if ip_obj.version != 4:
+        return ""
+    octets = str(ip_obj).split(".")
+    if len(octets) != 4:
+        return ""
+    return ".".join(reversed(octets))
+
+
+def _query_txt_single(name, resolver, attempts):
+    records, meta = _resolve_records(name, "TXT", resolver, attempts)
+    value = str(records[0]).strip() if records else ""
+    return value, meta
+
+
+def _query_a_single(name, resolver, attempts):
+    records, meta = _resolve_records(name, "A", resolver, attempts)
+    value = str(records[0]).strip() if records else ""
+    return value, meta
+
+
+def _lookup_ip_asn_country(ip_value, resolver, attempts):
+    reversed_ip = _reverse_ipv4_for_dnsbl(ip_value)
+    if not reversed_ip:
+        return {
+            "ip": str(ip_value or ""),
+            "asn": "",
+            "asn_name": "",
+            "prefix": "",
+            "country": "",
+            "registry": "",
+            "allocated": "",
+            "query": {"ok": False, "error_code": "UNSUPPORTED_IP_VERSION", "error": "Only IPv4 is currently supported"},
+        }
+
+    qname = f"{reversed_ip}.origin.asn.cymru.com"
+    txt_value, meta = _query_txt_single(qname, resolver, attempts)
+    parsed = {
+        "ip": str(ip_value or ""),
+        "asn": "",
+        "asn_name": "",
+        "prefix": "",
+        "country": "",
+        "registry": "",
+        "allocated": "",
+        "query": meta,
+    }
+    if not txt_value:
+        return parsed
+
+    # Team Cymru format: "AS | BGP Prefix | CC | Registry | Allocated | AS Name"
+    parts = [part.strip() for part in txt_value.strip('"').split("|")]
+    if parts:
+        parsed["asn"] = parts[0]
+    if len(parts) > 1:
+        parsed["prefix"] = parts[1]
+    if len(parts) > 2:
+        parsed["country"] = parts[2]
+    if len(parts) > 3:
+        parsed["registry"] = parts[3]
+    if len(parts) > 4:
+        parsed["allocated"] = parts[4]
+    if len(parts) > 5:
+        parsed["asn_name"] = parts[5]
+    return parsed
+
+
+def _blacklist_dns_zones_env(name, default_value):
+    return _split_csv_env(os.environ.get(name, default_value))
+
+
+def _reputation_enabled():
+    return str(os.environ.get("REPUTATION_ENABLE", "true")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _normalize_dnsbl_query_meta(meta, listed):
+    info = dict(meta or {})
+    if listed:
+        return info
+    code = str(info.get("error_code") or "").strip().upper()
+    if code in {"NXDOMAIN", "NO_ANSWER"}:
+        info["ok"] = True
+        info["error_code"] = ""
+        info["error"] = ""
+    return info
+
+
+def _check_dns_blacklists(hostname, resolved_ips, resolver, attempts):
+    out = {
+        "enabled": _reputation_enabled(),
+        "status": "disabled",
+        "listed": False,
+        "listed_count": 0,
+        "ip_checks": [],
+        "domain_checks": [],
+        "asn_country_exposure": {
+            "ips_with_asn_data": 0,
+            "asns": [],
+            "countries": [],
+        },
+    }
+    if not out["enabled"]:
+        return out
+
+    ip_dnsbl_zones = _blacklist_dns_zones_env(
+        "REPUTATION_IP_DNSBL_ZONES",
+        "zen.spamhaus.org,bl.spamcop.net",
+    )
+    domain_dnsbl_zones = _blacklist_dns_zones_env(
+        "REPUTATION_DOMAIN_DNSBL_ZONES",
+        "",
+    )
+
+    host = _normalize_host_name(hostname)
+    listed_count = 0
+
+    ips = []
+    seen_ips = set()
+    for value in resolved_ips or []:
+        ip_text = str(value or "").strip()
+        if not ip_text or ip_text in seen_ips:
+            continue
+        seen_ips.add(ip_text)
+        ips.append(ip_text)
+
+    asn_values = []
+    country_values = []
+    for ip_text in ips:
+        asn_info = _lookup_ip_asn_country(ip_text, resolver, attempts)
+        if asn_info.get("asn"):
+            asn_values.append(str(asn_info.get("asn")))
+        if asn_info.get("country"):
+            country_values.append(str(asn_info.get("country")))
+
+        reverse_ip = _reverse_ipv4_for_dnsbl(ip_text)
+        zone_checks = []
+        for zone in ip_dnsbl_zones:
+            qname = f"{reverse_ip}.{zone}" if reverse_ip else ""
+            listed_ip = False
+            listed_response = ""
+            query_meta = {
+                "ok": False,
+                "error_code": "UNSUPPORTED_IP_VERSION" if not reverse_ip else "SKIPPED",
+                "error": "Only IPv4 is currently supported" if not reverse_ip else "",
+            }
+            if qname:
+                listed_response, query_meta = _query_a_single(
+                    qname, resolver, attempts
+                )
+                listed_ip = bool(listed_response)
+                query_meta = _normalize_dnsbl_query_meta(query_meta, listed_ip)
+            if listed_ip:
+                listed_count += 1
+            zone_checks.append(
+                {
+                    "zone": zone,
+                    "query_name": qname,
+                    "listed": listed_ip,
+                    "response": listed_response,
+                    "query": query_meta,
+                }
+            )
+        out["ip_checks"].append(
+            {
+                "ip": ip_text,
+                "asn": asn_info.get("asn") or "",
+                "asn_name": asn_info.get("asn_name") or "",
+                "country": asn_info.get("country") or "",
+                "zones": zone_checks,
+            }
+        )
+
+    for zone in domain_dnsbl_zones:
+        qname = f"{host}.{zone}" if host else ""
+        listed_domain = False
+        listed_response = ""
+        query_meta = {"ok": False, "error_code": "EMPTY_HOST", "error": "hostname empty"}
+        if qname:
+            listed_response, query_meta = _query_a_single(qname, resolver, attempts)
+            listed_domain = bool(listed_response)
+            query_meta = _normalize_dnsbl_query_meta(query_meta, listed_domain)
+        if listed_domain:
+            listed_count += 1
+        out["domain_checks"].append(
+            {
+                "zone": zone,
+                "query_name": qname,
+                "listed": listed_domain,
+                "response": listed_response,
+                "query": query_meta,
+            }
+        )
+
+    asn_sorted = sorted({value for value in asn_values if value})
+    country_sorted = sorted({value for value in country_values if value})
+    out["asn_country_exposure"] = {
+        "ips_with_asn_data": len(asn_values),
+        "asns": asn_sorted,
+        "countries": country_sorted,
+    }
+    out["listed_count"] = listed_count
+    out["listed"] = listed_count > 0
+    out["status"] = "listed" if out["listed"] else "clean"
+    return out
+
+
+def _query_soa_via_nameserver(zone, ns_name, resolver, attempts):
+    target_zone = str(zone or "").strip().rstrip(".")
+    nameserver = _normalize_host_name(ns_name)
+    if not target_zone or not nameserver:
+        return {
+            "nameserver": nameserver,
+            "ip": "",
+            "reachable": False,
+            "authoritative_for_zone": False,
+            "lame": True,
+            "serial": "",
+            "query": {"ok": False, "error_code": "INVALID_INPUT", "error": "zone or nameserver missing"},
+        }
+
+    ns_ips, ns_meta = _resolve_records(nameserver, "A", resolver, attempts)
+    ns_ip = str(ns_ips[0]).strip() if ns_ips else ""
+    if not ns_ip:
+        return {
+            "nameserver": nameserver,
+            "ip": "",
+            "reachable": False,
+            "authoritative_for_zone": False,
+            "lame": True,
+            "serial": "",
+            "query": ns_meta,
+        }
+
+    direct_resolver = dns.resolver.Resolver(configure=False)
+    direct_resolver.nameservers = [ns_ip]
+    direct_resolver.timeout = resolver.timeout
+    direct_resolver.lifetime = resolver.lifetime
+    tries = max(1, int(attempts))
+    last_exc = None
+    serial = ""
+    for _ in range(tries):
+        try:
+            answers = direct_resolver.resolve(target_zone, "SOA")
+            if answers:
+                try:
+                    serial = str(int(answers[0].serial))
+                except Exception:
+                    serial = str(getattr(answers[0], "serial", "") or "")
+            return {
+                "nameserver": nameserver,
+                "ip": ns_ip,
+                "reachable": True,
+                "authoritative_for_zone": True,
+                "lame": False,
+                "serial": serial,
+                "query": {
+                    "ok": True,
+                    "error_code": "",
+                    "error": "",
+                    "query": {"name": target_zone, "type": "SOA", "nameserver_ip": ns_ip},
+                },
+            }
+        except Exception as exc:
+            last_exc = exc
+            code = _classify_dns_error(exc)
+            if code in {"NXDOMAIN", "NO_ANSWER"}:
+                break
+
+    return {
+        "nameserver": nameserver,
+        "ip": ns_ip,
+        "reachable": True,
+        "authoritative_for_zone": False,
+        "lame": True,
+        "serial": "",
+        "query": {
+            "ok": False,
+            "error_code": _classify_dns_error(last_exc) if last_exc else "UNKNOWN",
+            "error": str(last_exc) if last_exc else "SOA query failed",
+            "query": {"name": target_zone, "type": "SOA", "nameserver_ip": ns_ip},
+        },
+    }
+
+
+def _build_authoritative_dns_health(hostname, soa_zone, ns_records, resolver, attempts):
+    zone_name = str(soa_zone or hostname or "").strip().rstrip(".")
+    ns_list = []
+    for value in ns_records or []:
+        ns_name = _normalize_host_name(value)
+        if ns_name:
+            ns_list.append(ns_name)
+
+    health = {
+        "zone_checked": zone_name,
+        "nameserver_count": len(ns_list),
+        "nameservers_reachable": 0,
+        "authoritative_answer_count": 0,
+        "lame_delegation_detected": False,
+        "ns_consistent": True,
+        "serials": [],
+        "status": "unknown",
+        "issues": [],
+        "nameserver_checks": [],
+    }
+
+    if not ns_list:
+        health["status"] = "bad"
+        health["issues"].append("no_ns_records")
+        return health
+
+    for ns_name in ns_list:
+        check = _query_soa_via_nameserver(zone_name, ns_name, resolver, attempts)
+        health["nameserver_checks"].append(check)
+        if check.get("reachable"):
+            health["nameservers_reachable"] += 1
+        if check.get("authoritative_for_zone"):
+            health["authoritative_answer_count"] += 1
+
+    serial_values = [
+        str(item.get("serial") or "").strip()
+        for item in health["nameserver_checks"]
+        if item.get("authoritative_for_zone") and str(item.get("serial") or "").strip()
+    ]
+    dedup_serials = sorted({value for value in serial_values if value})
+    health["serials"] = dedup_serials
+    health["ns_consistent"] = len(dedup_serials) <= 1
+
+    lame = any(item.get("lame") for item in health["nameserver_checks"])
+    health["lame_delegation_detected"] = lame
+
+    if health["nameservers_reachable"] == 0:
+        health["issues"].append("no_nameserver_reachable")
+    if health["authoritative_answer_count"] == 0:
+        health["issues"].append("no_authoritative_soa_answers")
+    if lame:
+        health["issues"].append("lame_delegation_detected")
+    if not health["ns_consistent"]:
+        health["issues"].append("ns_soa_serial_inconsistency")
+
+    if not health["issues"]:
+        health["status"] = "good"
+    elif "no_authoritative_soa_answers" in health["issues"] or "lame_delegation_detected" in health["issues"]:
+        health["status"] = "bad"
+    else:
+        health["status"] = "warn"
+
+    return health
+
+
 def _extract_spf(txt_records):
     for record in txt_records:
         if str(record).lower().startswith("v=spf1"):
@@ -1885,6 +2243,31 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
                 "query": {},
             },
         },
+        "dns_authority": {
+            "zone_checked": "",
+            "nameserver_count": 0,
+            "nameservers_reachable": 0,
+            "authoritative_answer_count": 0,
+            "lame_delegation_detected": False,
+            "ns_consistent": True,
+            "serials": [],
+            "status": "unknown",
+            "issues": [],
+            "nameserver_checks": [],
+        },
+        "reputation": {
+            "enabled": False,
+            "status": "disabled",
+            "listed": False,
+            "listed_count": 0,
+            "ip_checks": [],
+            "domain_checks": [],
+            "asn_country_exposure": {
+                "ips_with_asn_data": 0,
+                "asns": [],
+                "countries": [],
+            },
+        },
         "dkim": {
             "domains": [],
             "selectors": [],
@@ -1959,6 +2342,13 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
         payload["ns"], payload["dns_meta"]["queries"]["ns"] = _resolve_records(
             host, "NS", resolver, attempts
         )
+        payload["dns_authority"] = _build_authoritative_dns_health(
+            host,
+            payload["soa_zone"],
+            payload["ns"],
+            resolver,
+            attempts,
+        )
         payload["mx"], payload["dns_meta"]["queries"]["mx"] = _resolve_records(
             host, "MX", resolver, attempts
         )
@@ -1972,6 +2362,12 @@ def _build_dns_payload(hostname, dns_scope="system", dkim_cfg=None):
             payload["spf"],
             txt_records,
             payload["mx"],
+            resolver,
+            attempts,
+        )
+        payload["reputation"] = _check_dns_blacklists(
+            host,
+            payload["resolved_ips"],
             resolver,
             attempts,
         )

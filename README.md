@@ -38,7 +38,7 @@ This tool is vibe coded and community-driven. It is practical and fast-moving by
 ## Usage (Simple)
 1. Add domains/hosts in `Domains / Hosts`.
 2. Trigger scans (`Run Scan`) or wait for scheduler runs.
-3. Review findings in `Results` and `Reports`.
+3. Review findings in `Results`, `Certificates`, and `Reports`.
 4. Use Admin pages for auth/proxy/scheduler/SMTP/DKIM/check policies.
 
 ## Troubleshooting
@@ -53,6 +53,9 @@ This tool is vibe coded and community-driven. It is practical and fast-moving by
 - DNS/M365 details missing:
   - trigger DNS refresh (or wait for background collection).
   - check resolver/proxy/network reachability.
+- Certificates list/details missing:
+  - verify target has TLS checks enabled.
+  - verify at least one completed TLS scan exists for that target.
 
 ## Geeks-Nerds Section
 Advanced topics and deployment variants live in dedicated docs pages:
@@ -60,6 +63,7 @@ Advanced topics and deployment variants live in dedicated docs pages:
 - [Deployment](docs/deployment.md)
 - [Authentication](docs/authentication.md)
 - [DNS And DKIM](docs/dns-and-dkim.md)
+- [Certificates](docs/certificates.md)
 - [Reports And SMTP](docs/reports-and-smtp.md)
 
 Recommended DKIM selector lists:

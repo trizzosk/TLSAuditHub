@@ -13,6 +13,30 @@ If your environment uses internal DNS with forwarding to external resolvers, tun
 - `WHOIS_SKIP_SUFFIXES` suffixes to skip WHOIS for internal/private domains
   (default: `.internal,.local,.corp,.lan,.home,localhost`)
 
+## Authoritative DNS health checks
+DNS scans also collect authoritative DNS health signals under `dns_authority`, including:
+- nameserver reachability
+- authoritative SOA answer presence
+- NS consistency and SOA serial consistency
+- lame delegation indicators
+
+These signals feed the `authoritative_dns_health` report.
+
+## Reputation/blacklist integrations
+Reputation checks are enabled by default and stored under `reputation` in DNS results.
+
+Environment flags:
+- `REPUTATION_ENABLE` enable/disable reputation checks (`true`/`false`, default `true`)
+- `REPUTATION_IP_DNSBL_ZONES` comma-separated DNSBL zones for IP checks
+  (default: `zen.spamhaus.org,bl.spamcop.net`)
+- `REPUTATION_DOMAIN_DNSBL_ZONES` comma-separated DNSBL zones for domain checks
+  (default: empty)
+
+Behavior note:
+- targets not listed in a DNSBL are treated as clean (not as scan errors).
+
+These signals feed the `reputation_blacklist` report.
+
 ## Split-brain DNS support (per target)
 Targets support `dns_scope`:
 - `system` (default): use host/system resolver behavior
@@ -75,4 +99,7 @@ DKIM_MAX_QUERIES=48
 DKIM_MAX_PARALLEL=8
 DKIM_EARLY_STOP_RECORDS=3
 DKIM_FULL_SCAN=false
+REPUTATION_ENABLE=true
+REPUTATION_IP_DNSBL_ZONES=zen.spamhaus.org,bl.spamcop.net
+REPUTATION_DOMAIN_DNSBL_ZONES=
 ```

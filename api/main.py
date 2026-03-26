@@ -23,6 +23,7 @@ import urllib.request
 import hashlib
 import base64
 import json
+import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
 from io import StringIO
@@ -284,6 +285,26 @@ REPORT_DEFINITIONS = {
         "description": (
             "Domains/hosts where SPF is not strict (-all) and DMARC policy is "
             "missing or p=none, with active mail-routing signals (MX/A/AAAA)."
+        ),
+        "severity": "high",
+    },
+    "authoritative_dns_health": {
+        "id": "authoritative_dns_health",
+        "finding_id": "AUTHORITATIVE_DNS_HEALTH_ISSUE",
+        "title": "Hosts With Authoritative DNS Health Issues",
+        "description": (
+            "Targets with NS reachability/consistency problems, no authoritative "
+            "SOA answers, or signs of lame delegation."
+        ),
+        "severity": "medium",
+    },
+    "reputation_blacklist": {
+        "id": "reputation_blacklist",
+        "finding_id": "REPUTATION_OR_BLACKLIST_RISK",
+        "title": "Hosts/IPs Listed On Reputation Blocklists",
+        "description": (
+            "Targets whose resolved IPs/domains appear on configured reputation "
+            "DNS blocklists, including ASN/country exposure context."
         ),
         "severity": "high",
     },
@@ -1033,30 +1054,33 @@ def _is_ip_address(value: str) -> bool:
         return False
 
 
-def _validate_hostname_resolves(hostname: str, port: int, dns_scope: str = "system"):
+def _validate_hostname_resolves(
+    hostname: str, port: int, dns_scope: str = "system", strict: bool = True
+) -> str | None:
     host = str(hostname or "").strip()
     if not host:
         raise HTTPException(status_code=400, detail="hostname is required")
     if _is_ip_address(host):
-        return
+        return None
     if str(dns_scope or "system").strip().lower() != "system":
         # Private/public resolver validation is handled in the worker path,
         # where resolver profiles are applied consistently for scan + DNS tasks.
-        return
+        return None
     try:
         socket.getaddrinfo(
             host, int(port), socket.AF_UNSPEC, socket.SOCK_STREAM
         )
     except socket.gaierror:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Hostname could not be resolved: {host}",
-        )
+        message = f"Hostname could not be resolved: {host}"
+        if strict:
+            raise HTTPException(status_code=400, detail=message)
+        return message
     except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Hostname resolution check failed for {host}: {exc}",
-        )
+        message = f"Hostname resolution check failed for {host}: {exc}"
+        if strict:
+            raise HTTPException(status_code=400, detail=message)
+        return message
+    return None
 
 
 def ensure_event_logs_table(db):
@@ -1867,8 +1891,11 @@ def add_target(
     user=Depends(get_current_user),
 ):
     normalized_dns_scope = _normalize_dns_scope(dns_scope)
+    resolution_warning = None
     if bool(tls_checks_enabled):
-        _validate_hostname_resolves(hostname, port, normalized_dns_scope)
+        resolution_warning = _validate_hostname_resolves(
+            hostname, port, normalized_dns_scope, strict=False
+        )
     db = SessionLocal()
     try:
         ensure_targets_dns_scope_column(db)
@@ -1901,6 +1928,7 @@ def add_target(
             "target_id": target_id,
             "dns_checks_enabled": bool(dns_checks_enabled),
             "tls_checks_enabled": bool(tls_checks_enabled),
+            "resolution_warning": resolution_warning,
         }
     finally:
         db.close()
@@ -2023,8 +2051,11 @@ def update_target(
         raise HTTPException(
             status_code=400, detail="port must be in range 1-65535"
         )
+    resolution_warning = None
     if tls_checks_enabled:
-        _validate_hostname_resolves(hostname, port, dns_scope)
+        resolution_warning = _validate_hostname_resolves(
+            hostname, port, dns_scope, strict=False
+        )
 
     db = SessionLocal()
     try:
@@ -2097,6 +2128,7 @@ def update_target(
             "dns_task_id": dns_task_id,
             "scan_task_id": scan_task_id,
             "queue_errors": queue_errors,
+            "resolution_warning": resolution_warning,
         }
     finally:
         db.close()
@@ -3921,6 +3953,186 @@ def _build_spoofable_domains_hosts_items(db):
     return items
 
 
+def _build_authoritative_dns_health_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status IN ('completed', 'done')
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["authoritative_dns_health"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        health = dns_data.get("dns_authority") or {}
+        status = str(health.get("status") or "").strip().lower()
+        issues = health.get("issues") or []
+        if not isinstance(issues, list):
+            issues = []
+        if status in {"", "good"} and not issues:
+            continue
+
+        nameserver_count = int(health.get("nameserver_count") or 0)
+        nameservers_reachable = int(health.get("nameservers_reachable") or 0)
+        authoritative_answer_count = int(health.get("authoritative_answer_count") or 0)
+        lame = bool(health.get("lame_delegation_detected"))
+        ns_consistent = bool(health.get("ns_consistent", True))
+        serials = health.get("serials") or []
+        if not isinstance(serials, list):
+            serials = []
+        severity = "medium"
+        if lame or authoritative_answer_count == 0 or nameserver_count == 0:
+            severity = "high"
+        elif not ns_consistent or nameservers_reachable < nameserver_count:
+            severity = "medium"
+        else:
+            severity = "low"
+
+        proof_parts = [
+            f"status={status or 'unknown'}",
+            f"zone={str(health.get('zone_checked') or '(unknown)')}",
+            f"reachable_ns={nameservers_reachable}/{nameserver_count}",
+            f"authoritative_soa_answers={authoritative_answer_count}",
+            f"lame_delegation={lame}",
+            f"ns_consistent={ns_consistent}",
+        ]
+        if serials:
+            proof_parts.append("serials=" + ",".join(str(v) for v in serials[:6]))
+        if issues:
+            proof_parts.append("issues=" + ",".join(str(v) for v in issues[:6]))
+
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": severity,
+                "finding_proof": "; ".join(proof_parts),
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
+def _build_reputation_blacklist_items(db):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              t.id AS target_id,
+              t.hostname,
+              t.port,
+              d.data AS dns_data,
+              latest.scan_timestamp_utc
+            FROM targets t
+            LEFT JOIN target_dns d ON d.target_id = t.id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+              FROM scans s
+              WHERE s.target_id = t.id
+                AND s.status IN ('completed', 'done')
+              ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+              LIMIT 1
+            ) latest ON TRUE
+            WHERE t.enabled = true
+              AND t.dns_checks_enabled = true
+            ORDER BY t.hostname ASC, t.port ASC
+            """
+        )
+    ).fetchall()
+    report = REPORT_DEFINITIONS["reputation_blacklist"]
+    items = []
+    for row in rows:
+        data = dict(row._mapping)
+        dns_data = data.get("dns_data") or {}
+        reputation = dns_data.get("reputation") or {}
+        enabled = bool(reputation.get("enabled"))
+        listed_count = int(reputation.get("listed_count") or 0)
+        if not enabled or listed_count <= 0:
+            continue
+
+        ip_checks = reputation.get("ip_checks") or []
+        if not isinstance(ip_checks, list):
+            ip_checks = []
+        domain_checks = reputation.get("domain_checks") or []
+        if not isinstance(domain_checks, list):
+            domain_checks = []
+        exposure = reputation.get("asn_country_exposure") or {}
+        asns = exposure.get("asns") or []
+        if not isinstance(asns, list):
+            asns = []
+        countries = exposure.get("countries") or []
+        if not isinstance(countries, list):
+            countries = []
+
+        listed_entries = []
+        for entry in ip_checks:
+            if not isinstance(entry, dict):
+                continue
+            ip_value = str(entry.get("ip") or "").strip()
+            zones = entry.get("zones") or []
+            if not isinstance(zones, list):
+                zones = []
+            listed_zones = [
+                f"{str(zone.get('zone') or '')}={str(zone.get('response') or 'listed')}"
+                for zone in zones
+                if isinstance(zone, dict) and bool(zone.get("listed"))
+            ]
+            if ip_value and listed_zones:
+                listed_entries.append(f"{ip_value}[{','.join(listed_zones[:4])}]")
+        for entry in domain_checks:
+            if not isinstance(entry, dict):
+                continue
+            if not bool(entry.get("listed")):
+                continue
+            listed_entries.append(
+                f"{str(entry.get('query_name') or '')}[{str(entry.get('response') or 'listed')}]"
+            )
+
+        proof_parts = [
+            f"listed_count={listed_count}",
+            f"status={str(reputation.get('status') or 'listed')}",
+        ]
+        if listed_entries:
+            proof_parts.append("listed_entries=" + "; ".join(listed_entries[:6]))
+        if asns:
+            proof_parts.append("asns=" + ",".join(str(v) for v in asns[:6]))
+        if countries:
+            proof_parts.append("countries=" + ",".join(str(v) for v in countries[:6]))
+
+        items.append(
+            {
+                "target_id": str(data["target_id"]),
+                "host_target": f'{data["hostname"]}:{data["port"]}',
+                "finding_id": report["finding_id"],
+                "severity": report["severity"],
+                "finding_proof": "; ".join(proof_parts),
+                "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            }
+        )
+    return items
+
+
 def _build_ct_revocation_gap_items(db):
     latest = _latest_completed_scans(db)
     by_scan = _load_results_for_scans(
@@ -4209,6 +4421,10 @@ def _build_report_items(db, report_id: str):
         rows = _build_hosted_in_m365_items(db)
     elif report_id == "spoofable_domains_hosts":
         rows = _build_spoofable_domains_hosts_items(db)
+    elif report_id == "authoritative_dns_health":
+        rows = _build_authoritative_dns_health_items(db)
+    elif report_id == "reputation_blacklist":
+        rows = _build_reputation_blacklist_items(db)
     elif report_id == "ct_revocation_gaps":
         rows = _build_ct_revocation_gap_items(db)
     elif report_id == "ca_issuers_used":
@@ -4249,6 +4465,135 @@ def _render_subject(template: str, report_meta: dict, row_count: int):
         .replace("{report_id}", report_meta.get("id") or "")
         .replace("{row_count}", str(row_count))
     )
+
+
+def _flatten_name(name_pairs):
+    out = []
+    for rdn in name_pairs or []:
+        if not isinstance(rdn, (list, tuple)):
+            continue
+        for item in rdn:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and item[0]
+            ):
+                out.append((str(item[0]), str(item[1])))
+    return out
+
+
+def _format_name_pairs(name_pairs):
+    pairs = _flatten_name(name_pairs)
+    if not pairs:
+        return ""
+    return ", ".join(f"{k}={v}" for k, v in pairs)
+
+
+def _extract_attr(name_pairs, keys):
+    keys_l = {str(k).strip().lower() for k in (keys or [])}
+    for key, value in _flatten_name(name_pairs):
+        if str(key).strip().lower() in keys_l:
+            return str(value)
+    return ""
+
+
+def _parse_openssl_time(value):
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    try:
+        return datetime.strptime(text_value, "%b %d %H:%M:%S %Y GMT").replace(
+            tzinfo=timezone.utc
+        )
+    except Exception:
+        return None
+
+
+def _crawl_live_certificate(hostname, port, timeout_seconds=8):
+    host = str(hostname or "").strip()
+    result = {
+        "ok": False,
+        "host": host,
+        "port": int(port or 443) if str(port or "").strip() else 443,
+        "tls_version": "",
+        "cipher": "",
+        "subject": "",
+        "issuer": "",
+        "serial_number": "",
+        "not_before": "",
+        "not_after": "",
+        "days_remaining": None,
+        "common_name": "",
+        "san_dns_names": [],
+        "ocsp_urls": [],
+        "ca_issuers": [],
+        "crl_distribution_points": [],
+        "fingerprint_sha256": "",
+        "certificate_pem": "",
+        "error": "",
+    }
+    if not host:
+        result["error"] = "empty_hostname"
+        return result
+
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, int(result["port"])), timeout=timeout_seconds) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as tls_sock:
+                result["tls_version"] = str(tls_sock.version() or "")
+                cipher_info = tls_sock.cipher()
+                if isinstance(cipher_info, (list, tuple)) and cipher_info:
+                    result["cipher"] = str(cipher_info[0] or "")
+                der = tls_sock.getpeercert(binary_form=True)
+                if not der:
+                    result["error"] = "no_peer_certificate"
+                    return result
+
+                result["fingerprint_sha256"] = hashlib.sha256(der).hexdigest()
+                pem = ssl.DER_cert_to_PEM_cert(der)
+                result["certificate_pem"] = pem
+
+                decoded = {}
+                try:
+                    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=True) as tmp:
+                        tmp.write(pem)
+                        tmp.flush()
+                        decoded = ssl._ssl._test_decode_cert(tmp.name)
+                except Exception:
+                    decoded = {}
+
+                subject = decoded.get("subject") or []
+                issuer = decoded.get("issuer") or []
+                san = decoded.get("subjectAltName") or []
+                result["subject"] = _format_name_pairs(subject)
+                result["issuer"] = _format_name_pairs(issuer)
+                result["serial_number"] = str(decoded.get("serialNumber") or "")
+                result["not_before"] = str(decoded.get("notBefore") or "")
+                result["not_after"] = str(decoded.get("notAfter") or "")
+                result["common_name"] = _extract_attr(subject, {"commonName", "CN"})
+                result["san_dns_names"] = [
+                    str(value)
+                    for kind, value in san
+                    if str(kind).upper() == "DNS" and value
+                ]
+                result["ocsp_urls"] = [str(v) for v in (decoded.get("OCSP") or []) if v]
+                result["ca_issuers"] = [str(v) for v in (decoded.get("caIssuers") or []) if v]
+                result["crl_distribution_points"] = [
+                    str(v) for v in (decoded.get("crlDistributionPoints") or []) if v
+                ]
+                not_after_dt = _parse_openssl_time(result["not_after"])
+                if not_after_dt:
+                    now = datetime.now(timezone.utc)
+                    result["days_remaining"] = int(
+                        (not_after_dt - now).total_seconds() // 86400
+                    )
+                result["ok"] = True
+                return result
+    except Exception as exc:
+        result["error"] = f"{exc.__class__.__name__}: {exc}"
+        return result
 
 
 @app.get("/jobs")
@@ -4301,6 +4646,149 @@ def list_jobs(
         return {
             "items": [dict(r._mapping) for r in rows],
             "total": total,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/certificates")
+def list_certificates(
+    limit: int = 0, offset: int = 0, user=Depends(get_current_user)
+):
+    db = SessionLocal()
+    try:
+        total_row = db.execute(
+            text(
+                """
+                SELECT COUNT(*) AS total
+                FROM targets t
+                WHERE t.enabled = true
+                  AND t.tls_checks_enabled = true
+                """
+            )
+        ).fetchone()
+        total = int(total_row._mapping["total"]) if total_row else 0
+
+        if limit and limit > 0:
+            limit_clause = "LIMIT :limit OFFSET :offset"
+            params = {"limit": limit, "offset": offset}
+        else:
+            limit_clause = ""
+            params = {}
+
+        rows = db.execute(
+            text(
+                f"""
+                SELECT
+                  t.id AS target_id,
+                  t.hostname,
+                  t.port,
+                  latest.scan_id,
+                  latest.scan_timestamp_utc,
+                  cert.result AS cert_result
+                FROM targets t
+                LEFT JOIN LATERAL (
+                  SELECT
+                    s.id AS scan_id,
+                    COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc
+                  FROM scans s
+                  WHERE s.target_id = t.id
+                    AND s.status IN ('completed', 'done')
+                  ORDER BY s.finished_at DESC NULLS LAST, s.started_at DESC NULLS LAST
+                  LIMIT 1
+                ) latest ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT r.result
+                  FROM scan_results r
+                  WHERE r.scan_id = latest.scan_id
+                    AND r.plugin = 'certificate_info'
+                  LIMIT 1
+                ) cert ON TRUE
+                WHERE t.enabled = true
+                  AND t.tls_checks_enabled = true
+                ORDER BY t.hostname ASC, t.port ASC
+                {limit_clause}
+                """
+            ),
+            params,
+        ).fetchall()
+
+        items = []
+        for row in rows:
+            data = dict(row._mapping)
+            cert_result = data.get("cert_result") or {}
+            chain = cert_result.get("certificate_chain") or []
+            leaf = chain[0] if isinstance(chain, list) and chain else {}
+            san_values = leaf.get("subject_alternative_name") or []
+            if not isinstance(san_values, list):
+                san_values = []
+            cn_value = _extract_leaf_cn(cert_result)
+            items.append(
+                {
+                    "target_id": str(data.get("target_id") or ""),
+                    "hostname": data.get("hostname") or "",
+                    "port": data.get("port"),
+                    "issuer": leaf.get("issuer") or "",
+                    "cn": cn_value,
+                    "san_names": san_values,
+                    "not_before": leaf.get("not_before"),
+                    "not_after": leaf.get("not_after"),
+                    "scan_id": str(data.get("scan_id") or "") if data.get("scan_id") else "",
+                    "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+                }
+            )
+
+        return {"items": items, "total": total}
+    finally:
+        db.close()
+
+
+@app.get("/certificates/{scan_id}/details")
+def certificate_details(scan_id: UUID, user=Depends(get_current_user)):
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  s.id AS scan_id,
+                  t.hostname,
+                  t.port,
+                  COALESCE(s.finished_at, s.started_at) AS scan_timestamp_utc,
+                  r.result AS cert_result
+                FROM scans s
+                LEFT JOIN targets t ON t.id = s.target_id
+                LEFT JOIN scan_results r
+                  ON r.scan_id = s.id
+                 AND r.plugin = 'certificate_info'
+                WHERE s.id = :sid
+                LIMIT 1
+                """
+            ),
+            {"sid": str(scan_id)},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Scan not found")
+
+        data = dict(row._mapping)
+        cert_result = data.get("cert_result") or {}
+        chain = cert_result.get("certificate_chain") or []
+        if not isinstance(chain, list) or not chain:
+            raise HTTPException(
+                status_code=404,
+                detail="Certificate details not available for this scan",
+            )
+
+        return {
+            "scan_id": str(data.get("scan_id") or scan_id),
+            "hostname": data.get("hostname") or "",
+            "port": data.get("port"),
+            "scan_timestamp_utc": data.get("scan_timestamp_utc"),
+            "certificate_info": cert_result,
+            "live_probe": _crawl_live_certificate(
+                data.get("hostname") or "",
+                data.get("port") or 443,
+            ),
         }
     finally:
         db.close()

@@ -59,13 +59,13 @@ This backlog captures candidate checks/functionality to add on top of current SS
   - [ ] Dangling CNAME / subdomain takeover indicators.
   - [ ] Expired domains in NS/MX/CNAME chains.
 
-- [ ] **Authoritative DNS health**
-  - [ ] NS consistency checks.
-  - [ ] Lame delegation detection.
+- [x] **Authoritative DNS health**
+  - [x] NS consistency checks.
+  - [x] Lame delegation detection.
 
-- [ ] **Reputation/blacklist integrations (optional)**
-  - [ ] Domain/IP blocklist checks.
-  - [ ] ASN/country exposure summaries.
+- [x] **Reputation/blacklist integrations (optional)**
+  - [x] Domain/IP blocklist checks.
+  - [x] ASN/country exposure summaries.
 
 - [ ] **Host dependency posture**
   - [ ] HTTP security headers checks.

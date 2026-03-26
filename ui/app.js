@@ -92,6 +92,14 @@ const ui = {
   jobsPrevBtn: document.getElementById("jobsPrevBtn"),
   jobsNextBtn: document.getElementById("jobsNextBtn"),
   jobsPageInfo: document.getElementById("jobsPageInfo"),
+  refreshCertificatesBtn: document.getElementById("refreshCertificatesBtn"),
+  certificatesBody: document.getElementById("certificatesBody"),
+  certificatesPageSize: document.getElementById("certificatesPageSize"),
+  certificatesPrevBtn: document.getElementById("certificatesPrevBtn"),
+  certificatesNextBtn: document.getElementById("certificatesNextBtn"),
+  certificatesPageInfo: document.getElementById("certificatesPageInfo"),
+  certificateDetailsTarget: document.getElementById("certificateDetailsTarget"),
+  certificateDetailsPanel: document.getElementById("certificateDetailsPanel"),
   selectedResultScanId: document.getElementById("selectedResultScanId"),
   jobResultsPanel: document.getElementById("jobResultsPanel"),
   refreshResultsListBtn: document.getElementById("refreshResultsListBtn"),
@@ -218,6 +226,7 @@ const SESSION_USER_KEY = "tlsaudithub_username";
 const pagination = {
   targets: { page: 1, pageSize: 10, total: 0 },
   jobs: { page: 1, pageSize: 10, total: 0 },
+  certificates: { page: 1, pageSize: 10, total: 0 },
   results: { page: 1, pageSize: 5, total: 0 },
   spoofable: { page: 1, pageSize: 10, total: 0 },
   reports: { page: 1, pageSize: 10, total: 0 },
@@ -228,6 +237,7 @@ let currentReportMeta = null;
 let currentReportItems = [];
 let currentReportId = "";
 let activeResultScanId = "";
+let activeCertificateScanId = "";
 const selectedReportTargetIds = new Set();
 let selectedReportRowKey = "";
 let activeAdminPage = "adminUsersPage";
@@ -262,9 +272,27 @@ function persistEventLog(message, level = "info", source = "ui") {
   });
 }
 
+function inferLogLevel(message) {
+  const text = String(message || "").toLowerCase();
+  if (!text) {
+    return "info";
+  }
+  if (
+    /\b(error|failed|exception|traceback|fatal)\b/.test(text) ||
+    /\bhttp\s*[45]\d{2}\b/.test(text) ||
+    /\b[45]\d{2}\s*(bad request|unauthorized|forbidden|not found|conflict|internal server error|service unavailable)\b/.test(text)
+  ) {
+    return "error";
+  }
+  if (/\b(warn|warning|degraded|retry|timeout)\b/.test(text)) {
+    return "warn";
+  }
+  return "info";
+}
+
 function log(message, options = {}) {
   const persist = options.persist !== false;
-  const level = options.level || "info";
+  const level = options.level || inferLogLevel(message);
   const source = options.source || "ui";
   const now = new Date().toLocaleTimeString();
   ui.logPanel.textContent += `\n[${now}] ${message}`;
@@ -659,6 +687,7 @@ function activateView(viewId) {
     reportsView: "Reports",
     jobsView: "Jobs",
     resultsView: "Results",
+    certificatesView: "Certificates",
     adminView: "Admin",
   };
 
@@ -693,6 +722,12 @@ function activateView(viewId) {
   }
   if (viewId === "resultsView") {
     refreshResultsList();
+  }
+  if (viewId === "certificatesView") {
+    if (!activeCertificateScanId) {
+      showCertificateDetailsPrompt();
+    }
+    refreshCertificates();
   }
   if (viewId === "reportsView") {
     refreshReports();
@@ -1425,6 +1460,21 @@ function renderDnsData(targetLabel, payload) {
   const m365TenantAssigned = Boolean(m365.tenant_assigned);
   const m365ServiceUsage = Boolean(m365.service_usage);
   const m365Autodiscover = m365.autodiscover || {};
+  const dnsAuthority = data.dns_authority || {};
+  const dnsAuthorityIssues = Array.isArray(dnsAuthority.issues)
+    ? dnsAuthority.issues
+    : [];
+  const dnsAuthorityNameserverChecks = Array.isArray(dnsAuthority.nameserver_checks)
+    ? dnsAuthority.nameserver_checks
+    : [];
+  const reputation = data.reputation || {};
+  const reputationIpChecks = Array.isArray(reputation.ip_checks)
+    ? reputation.ip_checks
+    : [];
+  const reputationDomainChecks = Array.isArray(reputation.domain_checks)
+    ? reputation.domain_checks
+    : [];
+  const reputationExposure = reputation.asn_country_exposure || {};
   const m365Identity = m365.identity || {};
   const m365IdentityTenantId = String(m365Identity.tenant_id || "").trim();
   const m365IdentityNamespaceType = String(
@@ -1473,6 +1523,66 @@ function renderDnsData(targetLabel, payload) {
     <article class="result-card">
       <h4>SOA Records</h4>
       ${renderDnsList(data.soa, "No SOA records found.")}
+    </article>
+    <article class="result-card">
+      <h4>Authoritative DNS Health</h4>
+      <dl class="result-grid">
+        <dt>Zone Checked</dt><dd class="tiny-mono">${sevBadge(
+          dnsAuthority.zone_checked || "-",
+          dnsAuthority.zone_checked ? "good" : "warn"
+        )}</dd>
+        <dt>Status</dt><dd>${sevBadge(
+          dnsAuthority.status || "unknown",
+          dnsAuthority.status === "good" ? "good" : dnsAuthority.status === "bad" ? "bad" : "warn"
+        )}</dd>
+        <dt>NS Count</dt><dd>${sevBadge(
+          String(dnsAuthority.nameserver_count ?? 0),
+          Number(dnsAuthority.nameserver_count || 0) > 0 ? "good" : "bad"
+        )}</dd>
+        <dt>Reachable NS</dt><dd>${sevBadge(
+          `${dnsAuthority.nameservers_reachable ?? 0}/${dnsAuthority.nameserver_count ?? 0}`,
+          Number(dnsAuthority.nameservers_reachable || 0) > 0 ? "good" : "bad"
+        )}</dd>
+        <dt>Authoritative SOA Answers</dt><dd>${sevBadge(
+          String(dnsAuthority.authoritative_answer_count ?? 0),
+          Number(dnsAuthority.authoritative_answer_count || 0) > 0 ? "good" : "bad"
+        )}</dd>
+        <dt>Lame Delegation</dt><dd>${sevBadge(
+          dnsAuthority.lame_delegation_detected ? "Detected" : "Not detected",
+          dnsAuthority.lame_delegation_detected ? "bad" : "good"
+        )}</dd>
+        <dt>NS Serial Consistency</dt><dd>${sevBadge(
+          dnsAuthority.ns_consistent ? "Consistent" : "Inconsistent",
+          dnsAuthority.ns_consistent ? "good" : "warn"
+        )}</dd>
+      </dl>
+      ${
+        dnsAuthorityIssues.length
+          ? `<ul class="result-list">${dnsAuthorityIssues
+              .map((issue) => `<li class="tiny-mono result-item-bad">${escapeHtml(String(issue))}</li>`)
+              .join("")}</ul>`
+          : "<p class='muted'>No authoritative DNS health issues detected.</p>"
+      }
+      ${
+        dnsAuthorityNameserverChecks.length
+          ? `<ul class="result-list">${dnsAuthorityNameserverChecks
+              .map(
+                (check) =>
+                  `<li class="tiny-mono">${
+                    escapeHtml(String(check.nameserver || "-"))
+                  } (${escapeHtml(String(check.ip || "no-ip"))}): ${
+                    escapeHtml(
+                      check.authoritative_for_zone
+                        ? "authoritative"
+                        : check.lame
+                          ? "lame/no-soa"
+                          : "unreachable"
+                    )
+                  }</li>`
+              )
+              .join("")}</ul>`
+          : ""
+      }
     </article>
     <article class="result-card">
       <h4>A Records</h4>
@@ -1635,6 +1745,77 @@ function renderDnsData(targetLabel, payload) {
       `
       }
     </article>
+    <article class="result-card">
+      <h4>Reputation / Blacklist (Optional)</h4>
+      <dl class="result-grid">
+        <dt>Checks Enabled</dt><dd>${sevBadge(
+          reputation.enabled ? "Yes" : "No",
+          reputation.enabled ? "good" : "warn"
+        )}</dd>
+        <dt>Status</dt><dd>${sevBadge(
+          reputation.status || "disabled",
+          reputation.status === "clean" ? "good" : reputation.status === "listed" ? "bad" : "warn"
+        )}</dd>
+        <dt>Listed Findings</dt><dd>${sevBadge(
+          String(reputation.listed_count ?? 0),
+          Number(reputation.listed_count || 0) > 0 ? "bad" : "good"
+        )}</dd>
+        <dt>ASNs</dt><dd class="tiny-mono">${sevBadge(
+          Array.isArray(reputationExposure.asns) && reputationExposure.asns.length
+            ? reputationExposure.asns.join(", ")
+            : "-",
+          Array.isArray(reputationExposure.asns) && reputationExposure.asns.length
+            ? "warn"
+            : "good"
+        )}</dd>
+        <dt>Countries</dt><dd class="tiny-mono">${sevBadge(
+          Array.isArray(reputationExposure.countries) &&
+          reputationExposure.countries.length
+            ? reputationExposure.countries.join(", ")
+            : "-",
+          Array.isArray(reputationExposure.countries) &&
+          reputationExposure.countries.length
+            ? "warn"
+            : "good"
+        )}</dd>
+      </dl>
+      ${
+        reputationIpChecks.length || reputationDomainChecks.length
+          ? `<ul class="result-list">${
+              reputationIpChecks
+                .map((entry) => {
+                  const zones = Array.isArray(entry.zones) ? entry.zones : [];
+                  const listedZones = zones
+                    .filter((z) => z && z.listed)
+                    .map((z) => `${z.zone}=${z.response || "listed"}`);
+                  return `<li class="tiny-mono">${
+                    escapeHtml(String(entry.ip || "-"))
+                  }: ${
+                    listedZones.length
+                      ? `<span class="result-item-bad">${escapeHtml(
+                          listedZones.join(", ")
+                        )}</span>`
+                      : `<span class="result-item-good">not listed</span>`
+                  }</li>`;
+                })
+                .join("")
+            }${
+              reputationDomainChecks
+                .map((entry) => {
+                  const label = `${entry.zone || "zone"}=${entry.response || "listed"}`;
+                  return `<li class="tiny-mono">${
+                    escapeHtml(String(entry.query_name || "-"))
+                  }: ${
+                    entry.listed
+                      ? `<span class="result-item-bad">${escapeHtml(label)}</span>`
+                      : `<span class="result-item-good">not listed</span>`
+                  }</li>`;
+                })
+                .join("")
+            }</ul>`
+          : "<p class='muted'>No blacklist checks executed or no reputation data available.</p>"
+      }
+    </article>
   `;
 }
 
@@ -1695,6 +1876,227 @@ function renderJobs(jobs) {
       }
     )
     .join("");
+}
+
+function renderCertificates(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    ui.certificatesBody.innerHTML =
+      "<tr><td colspan='7' class='muted'>No certificate data found</td></tr>";
+    return;
+  }
+
+  ui.certificatesBody.innerHTML = items
+    .map((row) => {
+      const hostLabel = escapeHtml(
+        `${row.hostname ?? "Unknown"}${row.port ? `:${row.port}` : ""}`
+      );
+      const cn = escapeHtml(String(row.cn || "-"));
+      const sanValues = Array.isArray(row.san_names) ? row.san_names : [];
+      const sans = escapeHtml(sanValues.length ? sanValues.join(", ") : "-");
+      const issuer = escapeHtml(String(row.issuer || "-"));
+      const notBefore = escapeHtml(fmtDate(row.not_before));
+      const notAfter = escapeHtml(fmtDate(row.not_after));
+      const scanId = String(row.scan_id || "").trim();
+      const detailsDisabled = scanId ? "" : "disabled";
+      return `
+      <tr>
+        <td class="tiny-mono">${hostLabel}</td>
+        <td class="tiny-mono">${cn}</td>
+        <td class="tiny-mono">${sans}</td>
+        <td class="tiny-mono">${issuer}</td>
+        <td>${notBefore}</td>
+        <td>${notAfter}</td>
+        <td>
+          <button
+            type="button"
+            class="show-certificate-details-btn btn btn-sm btn-outline-primary"
+            data-scan-id="${escapeHtml(scanId)}"
+            data-host-label="${hostLabel}"
+            ${detailsDisabled}
+          >
+            Show Details
+          </button>
+        </td>
+      </tr>
+    `;
+    })
+    .join("");
+}
+
+function showCertificateDetailsPrompt() {
+  activeCertificateScanId = "";
+  if (ui.certificateDetailsTarget) {
+    ui.certificateDetailsTarget.textContent = "";
+  }
+  if (ui.certificateDetailsPanel) {
+    ui.certificateDetailsPanel.classList.add("muted");
+    ui.certificateDetailsPanel.innerHTML = 'Select "Show Details" from a certificate row.';
+  }
+}
+
+function _extractCnFromSubject(subject) {
+  const value = String(subject || "");
+  const match = value.match(/(?:^|,)CN=([^,]+)/i);
+  return match ? match[1].trim() : "";
+}
+
+function formatCertificateDetailsText(payload) {
+  const certInfo = payload?.certificate_info || {};
+  const liveProbe = payload?.live_probe || {};
+  const chain = Array.isArray(certInfo.certificate_chain)
+    ? certInfo.certificate_chain
+    : [];
+  const leaf = chain.length ? chain[0] || {} : {};
+  const sanValues = Array.isArray(leaf.subject_alternative_name)
+    ? leaf.subject_alternative_name
+    : [];
+  const rev = certInfo.revocation || {};
+  const stapling = rev.ocsp_stapling || {};
+  const lines = [];
+
+  lines.push("Certificate:");
+  lines.push(`  Subject: ${leaf.subject || "-"}`);
+  lines.push(`  CN: ${_extractCnFromSubject(leaf.subject) || "-"}`);
+  lines.push(`  Issuer: ${leaf.issuer || "-"}`);
+  lines.push(`  Not Before: ${leaf.not_before || "-"}`);
+  lines.push(`  Not After : ${leaf.not_after || "-"}`);
+  lines.push(`  SANs (${sanValues.length}): ${sanValues.length ? sanValues.join(", ") : "-"}`);
+  lines.push("");
+  lines.push("Certificate Transparency:");
+  lines.push(
+    `  Embedded SCTs: ${certInfo.certificate_transparency?.has_embedded_scts ? "yes" : "no"}`
+  );
+  lines.push(
+    `  SCT Count: ${certInfo.certificate_transparency?.embedded_scts_count ?? 0}`
+  );
+  lines.push("");
+  lines.push("Revocation:");
+  lines.push(`  Basic Status: ${rev.basic_status || "-"}`);
+  lines.push(
+    `  OCSP Stapling: ${stapling.present ? `present (${stapling.quality || "-"})` : "missing"}`
+  );
+  lines.push(`  OCSP URLs (${(rev.ocsp_urls || []).length}): ${(rev.ocsp_urls || []).join(", ") || "-"}`);
+  lines.push(`  CRL URLs (${(rev.crl_urls || []).length}): ${(rev.crl_urls || []).join(", ") || "-"}`);
+  lines.push("");
+  lines.push("Live Probe (Direct TLS Crawler):");
+  lines.push(`  Status: ${liveProbe.ok ? "ok" : `error (${liveProbe.error || "unknown"})`}`);
+  lines.push(`  Host: ${liveProbe.host || "-"}`);
+  lines.push(`  Port: ${liveProbe.port ?? "-"}`);
+  lines.push(`  TLS Version: ${liveProbe.tls_version || "-"}`);
+  lines.push(`  Cipher: ${liveProbe.cipher || "-"}`);
+  lines.push(`  Subject: ${liveProbe.subject || "-"}`);
+  lines.push(`  CN: ${liveProbe.common_name || "-"}`);
+  lines.push(`  Issuer: ${liveProbe.issuer || "-"}`);
+  lines.push(`  Serial Number: ${liveProbe.serial_number || "-"}`);
+  lines.push(`  Not Before: ${liveProbe.not_before || "-"}`);
+  lines.push(`  Not After : ${liveProbe.not_after || "-"}`);
+  lines.push(
+    `  Days Remaining: ${
+      Number.isFinite(liveProbe.days_remaining)
+        ? String(liveProbe.days_remaining)
+        : "-"
+    }`
+  );
+  lines.push(
+    `  SANs (${Array.isArray(liveProbe.san_dns_names) ? liveProbe.san_dns_names.length : 0}): ${
+      Array.isArray(liveProbe.san_dns_names) && liveProbe.san_dns_names.length
+        ? liveProbe.san_dns_names.join(", ")
+        : "-"
+    }`
+  );
+  lines.push(
+    `  OCSP URLs (${Array.isArray(liveProbe.ocsp_urls) ? liveProbe.ocsp_urls.length : 0}): ${
+      Array.isArray(liveProbe.ocsp_urls) && liveProbe.ocsp_urls.length
+        ? liveProbe.ocsp_urls.join(", ")
+        : "-"
+    }`
+  );
+  lines.push(
+    `  CA Issuers (${Array.isArray(liveProbe.ca_issuers) ? liveProbe.ca_issuers.length : 0}): ${
+      Array.isArray(liveProbe.ca_issuers) && liveProbe.ca_issuers.length
+        ? liveProbe.ca_issuers.join(", ")
+        : "-"
+    }`
+  );
+  lines.push(
+    `  CRL Distribution Points (${Array.isArray(liveProbe.crl_distribution_points) ? liveProbe.crl_distribution_points.length : 0}): ${
+      Array.isArray(liveProbe.crl_distribution_points) &&
+      liveProbe.crl_distribution_points.length
+        ? liveProbe.crl_distribution_points.join(", ")
+        : "-"
+    }`
+  );
+  lines.push(`  Fingerprint (SHA256): ${liveProbe.fingerprint_sha256 || "-"}`);
+  lines.push("");
+  lines.push("Live Probe Certificate PEM:");
+  lines.push(liveProbe.certificate_pem || "-");
+  lines.push("");
+  lines.push("Raw JSON:");
+  lines.push(JSON.stringify(certInfo, null, 2));
+
+  return lines.join("\n");
+}
+
+async function loadCertificateDetails(scanId, hostLabel) {
+  const id = String(scanId || "").trim();
+  if (!id) {
+    return;
+  }
+  try {
+    const data = await apiRequest(`/certificates/${encodeURIComponent(id)}/details`, {
+      method: "GET",
+    });
+    activeCertificateScanId = id;
+    if (ui.certificateDetailsTarget) {
+      ui.certificateDetailsTarget.textContent = hostLabel
+        ? `for ${hostLabel} (SCAN ID:${id})`
+        : `SCAN ID:${id}`;
+    }
+    if (ui.certificateDetailsPanel) {
+      ui.certificateDetailsPanel.classList.remove("muted");
+      const detailsText = formatCertificateDetailsText(data);
+      ui.certificateDetailsPanel.innerHTML = `<pre>${escapeHtml(detailsText)}</pre>`;
+    }
+    log(`Loaded certificate details for scan ${id}.`);
+  } catch (error) {
+    if (ui.certificateDetailsPanel) {
+      ui.certificateDetailsPanel.classList.add("muted");
+      ui.certificateDetailsPanel.innerHTML = `<p>Certificate details load failed: ${escapeHtml(
+        error.message
+      )}</p>`;
+    }
+    log(`Certificate details load failed: ${error.message}`);
+  }
+}
+
+async function refreshCertificates() {
+  try {
+    pagination.certificates.pageSize = getPageSize(ui.certificatesPageSize, 10);
+    const limit = pagination.certificates.pageSize;
+    const offset =
+      limit > 0 ? (pagination.certificates.page - 1) * limit : 0;
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    const data = await apiRequest(`/certificates?${query.toString()}`, {
+      method: "GET",
+    });
+    pagination.certificates.total = data.total ?? 0;
+    updatePaginationUI("certificates", {
+      prevBtn: ui.certificatesPrevBtn,
+      nextBtn: ui.certificatesNextBtn,
+      pageInfo: ui.certificatesPageInfo,
+    });
+    renderCertificates(Array.isArray(data.items) ? data.items : []);
+    log(
+      `Loaded ${Array.isArray(data.items) ? data.items.length : 0} certificate rows.`
+    );
+  } catch (error) {
+    ui.certificatesBody.innerHTML =
+      "<tr><td colspan='7' class='muted'>Failed to load certificate data</td></tr>";
+    log(`Certificate list load failed: ${error.message}`);
+  }
 }
 
 function scanTypeLabelForJob(job) {
@@ -1970,6 +2372,16 @@ const REPORT_REMEDIATION_HINTS = {
     "Confirm this domain should be operated through Microsoft 365 mail services.",
     "Document tenant ownership and approved mail flow for audit/compliance.",
     "If M365 is unintended, remove Outlook-related DNS dependencies and re-check.",
+  ],
+  AUTHORITATIVE_DNS_HEALTH_ISSUE: [
+    "Verify NS delegation at registrar matches active authoritative nameservers.",
+    "Fix nameservers that fail SOA answers or resolve to stale/unreachable endpoints.",
+    "Ensure SOA serial consistency across authoritative nameservers.",
+  ],
+  REPUTATION_OR_BLACKLIST_RISK: [
+    "Investigate listed IP/domain entries and validate whether listings are true positives.",
+    "Remediate abuse/spam root cause, then request delisting from affected providers.",
+    "Review exposed ASN/country footprint and tighten mail/infrastructure controls where needed.",
   ],
 };
 
@@ -2772,6 +3184,9 @@ async function saveTargetEdit(event) {
     );
     if (queueErrors.length > 0) {
       log(`Target ${targetId} updated, but queue warnings: ${queueErrors.join(" | ")}`);
+    }
+    if (data?.resolution_warning) {
+      log(`Target ${targetId} saved with warning: ${data.resolution_warning}`);
     }
     setEditTargetStatus("Target saved successfully.", "success");
     closeEditTargetPanel();
@@ -3700,10 +4115,13 @@ async function addTarget(event) {
   });
 
   try {
-    await apiRequest(`/targets?${query.toString()}`, { method: "POST" });
+    const data = await apiRequest(`/targets?${query.toString()}`, { method: "POST" });
     log(
       `Target added: ${hostname}:${port} (dns_scope=${dnsScope}, tls_checks_enabled=${tlsChecksEnabled}, dns_checks_enabled=${dnsChecksEnabled})`
     );
+    if (data?.resolution_warning) {
+      log(`Target added with warning: ${data.resolution_warning}`);
+    }
     ui.targetForm.reset();
     ui.port.value = "443";
     ui.dnsScope.value = "system";
@@ -3725,6 +4143,7 @@ async function refreshAll() {
     ["targets", refreshTargets],
     ["spoofable", refreshSpoofable],
     ["jobs", refreshJobs],
+    ["certificates", refreshCertificates],
     ["results", refreshResultsList],
   ];
   if (currentUserIsAdmin) {
@@ -3772,6 +4191,7 @@ ui.reportEmailPanel.addEventListener("click", (event) => {
 ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
 ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
+ui.refreshCertificatesBtn?.addEventListener("click", refreshCertificates);
 ui.refreshResultsListBtn?.addEventListener("click", refreshResultsList);
 ui.resultsPageSize?.addEventListener("change", () => {
   pagination.results.page = 1;
@@ -3863,6 +4283,10 @@ ui.jobsPageSize.addEventListener("change", () => {
   pagination.jobs.page = 1;
   refreshJobs();
 });
+ui.certificatesPageSize?.addEventListener("change", () => {
+  pagination.certificates.page = 1;
+  refreshCertificates();
+});
 ui.spoofablePageSize.addEventListener("change", () => {
   pagination.spoofable.page = 1;
   refreshSpoofable();
@@ -3903,6 +4327,14 @@ ui.jobsPrevBtn.addEventListener("click", () => {
 ui.jobsNextBtn.addEventListener("click", () => {
   pagination.jobs.page += 1;
   refreshJobs();
+});
+ui.certificatesPrevBtn?.addEventListener("click", () => {
+  pagination.certificates.page = Math.max(1, pagination.certificates.page - 1);
+  refreshCertificates();
+});
+ui.certificatesNextBtn?.addEventListener("click", () => {
+  pagination.certificates.page += 1;
+  refreshCertificates();
 });
 ui.resultsPrevBtn?.addEventListener("click", () => {
   pagination.results.page = Math.max(1, pagination.results.page - 1);
@@ -4080,6 +4512,15 @@ ui.resultsListBody?.addEventListener("click", (event) => {
   if (deleteBtn) {
     deleteResult(deleteBtn.dataset.scanId);
   }
+});
+ui.certificatesBody?.addEventListener("click", (event) => {
+  const detailsBtn = event.target.closest(".show-certificate-details-btn");
+  if (!detailsBtn) {
+    return;
+  }
+  const scanId = detailsBtn.dataset.scanId || "";
+  const hostLabel = detailsBtn.dataset.hostLabel || "";
+  loadCertificateDetails(scanId, hostLabel);
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
