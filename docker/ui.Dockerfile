@@ -9,4 +9,4 @@ COPY ui/ /app/
 
 EXPOSE 5173
 
-CMD ["python", "-m", "http.server", "5173", "--bind", "0.0.0.0"]
+CMD ["python", "/app/secure_server.py"]

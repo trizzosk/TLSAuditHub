@@ -1930,7 +1930,7 @@ function showCertificateDetailsPrompt() {
   }
   if (ui.certificateDetailsPanel) {
     ui.certificateDetailsPanel.classList.add("muted");
-    ui.certificateDetailsPanel.innerHTML = 'Select "Show Details" from a certificate row.';
+    ui.certificateDetailsPanel.innerHTML = 'Choose "Show Details" in a certificate row.';
   }
 }
 
