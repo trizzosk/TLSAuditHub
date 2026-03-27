@@ -5,16 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    psycopg2-binary \
-    sqlalchemy \
-    celery \
-    redis \
-    python-jose \
-    passlib[bcrypt] \
-    python-multipart
+COPY api/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY api/ /app/
 RUN mkdir -p /app/shared

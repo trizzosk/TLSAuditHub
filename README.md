@@ -23,11 +23,16 @@ This tool is vibe coded and community-driven. It is practical and fast-moving by
 - Open ports `5173` (UI) and `8000` (API)
 
 ### Quick Start In 60 Seconds
-1. Start services:
+1. Create local environment file and adjust values:
+   - `cp .env-example .env`
+   - Edit `.env` (at minimum set a strong `JWT_SECRET_KEY`)
+   - Example: `head -c 48 /dev/urandom | base64 | tr -d '\n'`
+   - Alternative: `openssl rand -hex 48`
+2. Start services:
    - `docker compose up`
-2. Open UI:
+3. Open UI:
    - `http://localhost:5173`
-3. Log in with default admin account:
+4. Log in with default admin account:
    - Username: `Adm$n`
    - Password: `Cr!mson$Nebula_7#Qx`
 

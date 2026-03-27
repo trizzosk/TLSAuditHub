@@ -1,8 +1,15 @@
 # Deployment
 
 ## Run everything (API + workers + UI)
-1. `docker compose up`
-2. Open `http://localhost:5173`
+1. Create local environment file:
+   - `cp .env-example .env`
+2. Update `.env` before deployment:
+   - set a strong `JWT_SECRET_KEY`
+   - example: `head -c 48 /dev/urandom | base64 | tr -d '\n'`
+   - alternative: `openssl rand -hex 48`
+   - review/adjust proxy and DNS values for your environment
+3. `docker compose up`
+4. Open `http://localhost:5173`
 
 ### UI API base URL behavior
 - When UI runs on `localhost:5173` or `127.0.0.1:5173`, it targets API on the same host at port `8000`.

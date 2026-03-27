@@ -21,6 +21,3 @@ app/__pycache__/models.cpython-313.pyc
 worker/__pycache__/diff.cpython-313.pyc
 worker/__pycache__/normalize.cpython-313.pyc
 worker/__pycache__/worker.cpython-313.pyc
-.env
-.env
-.env
