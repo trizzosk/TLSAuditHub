@@ -1,6 +1,6 @@
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import text
 from celery import Celery
 from shared.database import SessionLocal
@@ -24,10 +24,12 @@ import hashlib
 import base64
 import json
 import tempfile
+import textwrap
 from datetime import datetime, timezone
 from uuid import UUID
-from io import StringIO
+from io import BytesIO, StringIO
 from email.message import EmailMessage
+from html import escape as html_escape
 
 app = FastAPI(title="SSLyze Scanner API")
 celery_client = Celery(
@@ -59,6 +61,9 @@ CHECK_THRESHOLD_KEYS = (
     "cert_expiry_days",
     "hsts_min_max_age",
 )
+REPORT_THEME_PRIMARY_DEFAULT = (
+    os.environ.get("REPORT_THEME_PRIMARY_COLOR") or "#2f5d86"
+).strip()
 
 OIDC_ISSUER_URL_DEFAULT = (os.environ.get("OIDC_ISSUER_URL") or "").strip()
 OIDC_CLIENT_ID_DEFAULT = (os.environ.get("OIDC_CLIENT_ID") or "").strip()
@@ -195,6 +200,10 @@ class ChecksConfigUpdate(BaseModel):
     enabled_reports: dict[str, bool] = Field(default_factory=dict)
     severity_overrides: dict[str, str] = Field(default_factory=dict)
     thresholds: dict[str, int] = Field(default_factory=dict)
+
+
+class ReportThemeConfigUpdate(BaseModel):
+    primary_color: str = "#2f5d86"
 
 
 REPORT_DEFINITIONS = {
@@ -702,6 +711,118 @@ def _normalize_checks_thresholds(raw: dict | None) -> dict:
     out["cert_expiry_days"] = max(1, min(3650, int(out["cert_expiry_days"])))
     out["hsts_min_max_age"] = max(0, min(63072000, int(out["hsts_min_max_age"])))
     return out
+
+
+def _normalize_hex_color(value: str, fallback: str = "#2f5d86") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = fallback
+    if not raw.startswith("#"):
+        raw = f"#{raw}"
+    if not re.match(r"^#[0-9a-fA-F]{6}$", raw):
+        safe_fallback = str(fallback or "#2f5d86").strip()
+        if not safe_fallback.startswith("#"):
+            safe_fallback = f"#{safe_fallback}"
+        if re.match(r"^#[0-9a-fA-F]{6}$", safe_fallback):
+            return safe_fallback.lower()
+        return "#2f5d86"
+    return raw.lower()
+
+
+def _hex_to_rgb_tuple(value: str) -> tuple[int, int, int]:
+    color = _normalize_hex_color(value)
+    return (
+        int(color[1:3], 16),
+        int(color[3:5], 16),
+        int(color[5:7], 16),
+    )
+
+
+def _rgb_tuple_to_hex(rgb: tuple[int, int, int]) -> str:
+    r = max(0, min(255, int(rgb[0])))
+    g = max(0, min(255, int(rgb[1])))
+    b = max(0, min(255, int(rgb[2])))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _mix_hex(base_hex: str, mix_with: str, ratio: float) -> str:
+    ratio_value = max(0.0, min(1.0, float(ratio)))
+    b = _hex_to_rgb_tuple(base_hex)
+    m = _hex_to_rgb_tuple(mix_with)
+    mixed = (
+        int(round((b[0] * (1 - ratio_value)) + (m[0] * ratio_value))),
+        int(round((b[1] * (1 - ratio_value)) + (m[1] * ratio_value))),
+        int(round((b[2] * (1 - ratio_value)) + (m[2] * ratio_value))),
+    )
+    return _rgb_tuple_to_hex(mixed)
+
+
+def ensure_report_theme_config_table(db):
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS report_theme_config (
+                id INT PRIMARY KEY DEFAULT 1,
+                primary_color TEXT NOT NULL DEFAULT '#2f5d86',
+                updated_at TIMESTAMP NOT NULL DEFAULT now(),
+                CONSTRAINT report_theme_config_singleton CHECK (id = 1)
+            )
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            INSERT INTO report_theme_config (id, primary_color)
+            VALUES (1, :primary_color)
+            ON CONFLICT (id) DO NOTHING
+            """
+        ),
+        {"primary_color": _normalize_hex_color(REPORT_THEME_PRIMARY_DEFAULT)},
+    )
+    db.commit()
+
+
+def read_report_theme_config(db) -> dict:
+    ensure_report_theme_config_table(db)
+    row = db.execute(
+        text(
+            """
+            SELECT primary_color, updated_at
+            FROM report_theme_config
+            WHERE id = 1
+            """
+        )
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="report theme config unavailable")
+    primary = _normalize_hex_color(
+        row._mapping.get("primary_color") or REPORT_THEME_PRIMARY_DEFAULT
+    )
+    return {
+        "primary_color": primary,
+        "updated_at": row._mapping.get("updated_at"),
+    }
+
+
+def _report_theme_palette(theme_cfg: dict | None) -> dict:
+    cfg = theme_cfg if isinstance(theme_cfg, dict) else {}
+    primary = _normalize_hex_color(cfg.get("primary_color") or REPORT_THEME_PRIMARY_DEFAULT)
+    primary_dark = _mix_hex(primary, "#000000", 0.25)
+    primary_darker = _mix_hex(primary, "#000000", 0.42)
+    primary_light = _mix_hex(primary, "#ffffff", 0.82)
+    border = _mix_hex(primary, "#ffffff", 0.70)
+    text = _mix_hex(primary, "#000000", 0.58)
+    muted = _mix_hex(primary, "#ffffff", 0.35)
+    return {
+        "primary": primary,
+        "primary_dark": primary_dark,
+        "primary_darker": primary_darker,
+        "primary_light": primary_light,
+        "border": border,
+        "text": text,
+        "muted": muted,
+    }
 
 
 def ensure_checks_config_table(db):
@@ -1260,6 +1381,1468 @@ def _parse_targets_csv(csv_bytes: bytes) -> dict:
     }
 
 
+def _json_pretty(value) -> str:
+    try:
+        return json.dumps(
+            value if value is not None else {},
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=True,
+            default=str,
+        )
+    except Exception:
+        return "{}"
+
+
+def _safe_text(value) -> str:
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    # Remove common replacement glyphs from upstream decoding issues.
+    text = text.replace("\ufffd", "").replace("\u25a0", "").replace("\u25aa", "")
+    return text if text else "-"
+
+
+def _pdf_safe_text(value) -> str:
+    text = _safe_text(value)
+    replacements = {
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2022": "*",
+        "\u00a0": " ",
+        "\u200b": "",
+        "\u200c": "",
+        "\u200d": "",
+        "\ufeff": "",
+        "\ufffd": "",
+        "\u25a0": "",
+        "\u25aa": "",
+        "\u25a1": "",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    # Built-in PDF fonts in use are not full Unicode; keep to latin-1-safe glyphs.
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+def _short_json(value, max_len: int = 220) -> str:
+    raw = _json_pretty(value)
+    compact = " ".join(raw.split())
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max(0, max_len - 3)] + "..."
+
+
+def _plugin_result_summary(plugin_name: str, plugin_result: dict) -> str:
+    plugin = str(plugin_name or "").strip().lower()
+    result = plugin_result or {}
+
+    if plugin == "certificate_info":
+        chain = result.get("certificate_chain") or []
+        if isinstance(chain, list) and chain:
+            leaf = chain[0] if isinstance(chain[0], dict) else {}
+            cn = _safe_text(leaf.get("common_name") or leaf.get("subject"))
+            not_after = _safe_text(leaf.get("not_after"))
+            return f"Leaf CN: {cn}; Not After: {not_after}"
+        return "Certificate chain unavailable."
+    if plugin == "http_headers":
+        hsts = _safe_text((result.get("headers") or {}).get("strict-transport-security"))
+        if hsts == "-":
+            hsts = _safe_text(result.get("hsts"))
+        return f"HSTS: {hsts}"
+    if plugin.endswith("cipher_suites"):
+        supported = bool(result.get("is_protocol_supported"))
+        accepted = result.get("accepted_cipher_suites") or []
+        return f"Protocol supported: {supported}; Accepted ciphers: {len(accepted)}"
+    if plugin in ("tls_compression", "tls_fallback_scsv"):
+        return _short_json(result, max_len=180)
+    return _short_json(result, max_len=180)
+
+
+def _ascii_table(headers: list[str], rows: list[list[str]]) -> str:
+    header_vals = [str(h or "") for h in headers]
+    row_vals = [[str(c or "") for c in row] for row in rows]
+    col_count = len(header_vals)
+    widths = [len(header_vals[i]) for i in range(col_count)]
+    for row in row_vals:
+        for i in range(col_count):
+            if i < len(row):
+                widths[i] = max(widths[i], len(row[i]))
+
+    def fmt_row(cols: list[str]) -> str:
+        padded = []
+        for idx in range(col_count):
+            val = cols[idx] if idx < len(cols) else ""
+            padded.append(" " + val.ljust(widths[idx]) + " ")
+        return "|" + "|".join(padded) + "|"
+
+    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+    lines = [sep, fmt_row(header_vals), sep]
+    for row in row_vals:
+        lines.append(fmt_row(row))
+    lines.append(sep)
+    return "\n".join(lines)
+
+
+def _evaluate_spoofing_posture(dns_payload: dict | None) -> dict:
+    data = dns_payload or {}
+    spf = str(data.get("spf") or "").strip()
+    dmarc = data.get("dmarc") or {}
+    dmarc_policy = str(dmarc.get("policy") or "").strip().lower()
+    has_mx = bool(data.get("mx") or [])
+    has_a = bool(data.get("a") or [])
+    has_aaaa = bool(data.get("aaaa") or [])
+    has_mail_surface = has_mx or has_a or has_aaaa
+    spf_strict = "-all" in spf.lower()
+    dmarc_enforced = dmarc_policy in ("reject", "quarantine")
+
+    if has_mail_surface and not spf_strict and dmarc_policy in ("", "none"):
+        status = "spoofable"
+        summary = (
+            "Potentially spoofable: mail surface detected, SPF is not strict, "
+            "and DMARC policy is missing/none."
+        )
+    elif has_mail_surface and (not spf_strict or not dmarc_enforced):
+        status = "needs_review"
+        summary = (
+            "Needs review: partial email-auth protection detected "
+            "(SPF/DMARC not fully enforcing)."
+        )
+    else:
+        status = "not_spoofable"
+        summary = "Not spoofable by baseline SPF/DMARC posture check."
+
+    return {
+        "status": status,
+        "summary": summary,
+        "spf_record": spf,
+        "dmarc_policy": dmarc_policy or "",
+        "has_mx": has_mx,
+        "has_a": has_a,
+        "has_aaaa": has_aaaa,
+    }
+
+
+def _build_target_report_payload(db, target_id: UUID) -> dict:
+    ensure_target_dns_table(db)
+    ensure_targets_check_columns(db)
+    ensure_targets_dns_scope_column(db)
+
+    target_row = db.execute(
+        text(
+            """
+            SELECT id, hostname, port, enabled, scan_interval_minutes, dns_scope,
+                   dns_checks_enabled, tls_checks_enabled
+            FROM targets
+            WHERE id = :tid
+            """
+        ),
+        {"tid": str(target_id)},
+    ).fetchone()
+    if not target_row:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    target = dict(target_row._mapping)
+    dns_row = db.execute(
+        text(
+            """
+            SELECT data, updated_at
+            FROM target_dns
+            WHERE target_id = :tid
+            """
+        ),
+        {"tid": str(target_id)},
+    ).fetchone()
+
+    dns_data = {}
+    dns_updated_at = None
+    if dns_row:
+        dns_data = dns_row._mapping.get("data") or {}
+        dns_updated_at = dns_row._mapping.get("updated_at")
+
+    latest_scan_row = db.execute(
+        text(
+            """
+            SELECT id, status, started_at, finished_at, error_message
+            FROM scans
+            WHERE target_id = :tid
+            ORDER BY finished_at DESC NULLS LAST, started_at DESC NULLS LAST
+            LIMIT 1
+            """
+        ),
+        {"tid": str(target_id)},
+    ).fetchone()
+
+    latest_scan = {}
+    scan_plugins = []
+    cert_result = {}
+    if latest_scan_row:
+        latest_scan = dict(latest_scan_row._mapping)
+        scan_id = latest_scan.get("id")
+        if scan_id:
+            scan_rows = db.execute(
+                text(
+                    """
+                    SELECT plugin, result
+                    FROM scan_results
+                    WHERE scan_id = :sid
+                    ORDER BY plugin ASC
+                    """
+                ),
+                {"sid": str(scan_id)},
+            ).fetchall()
+            scan_plugins = [dict(r._mapping) for r in scan_rows]
+            for item in scan_plugins:
+                if str(item.get("plugin") or "") == "certificate_info":
+                    cert_result = item.get("result") or {}
+                    break
+
+    cert_chain = (cert_result or {}).get("certificate_chain") or []
+    cert_leaf = cert_chain[0] if isinstance(cert_chain, list) and cert_chain else {}
+    certificate_summary = {
+        "common_name": _extract_leaf_cn(cert_result),
+        "issuer": cert_leaf.get("issuer") if isinstance(cert_leaf, dict) else "",
+        "not_before": cert_leaf.get("not_before") if isinstance(cert_leaf, dict) else "",
+        "not_after": cert_leaf.get("not_after") if isinstance(cert_leaf, dict) else "",
+        "subject_alternative_name": (
+            cert_leaf.get("subject_alternative_name")
+            if isinstance(cert_leaf, dict)
+            else []
+        ),
+    }
+
+    generated_at_utc = datetime.now(timezone.utc).isoformat()
+    spoofing_check = _evaluate_spoofing_posture(dns_data)
+
+    return {
+        "generated_at_utc": generated_at_utc,
+        "target": {
+            "id": str(target.get("id") or ""),
+            "hostname": target.get("hostname") or "",
+            "port": target.get("port"),
+            "enabled": bool(target.get("enabled")),
+            "scan_interval_minutes": target.get("scan_interval_minutes"),
+            "dns_scope": target.get("dns_scope") or "system",
+            "dns_checks_enabled": bool(target.get("dns_checks_enabled")),
+            "tls_checks_enabled": bool(target.get("tls_checks_enabled")),
+        },
+        "dns": {
+            "status": "ok" if dns_row else "pending",
+            "updated_at": dns_updated_at,
+            "data": dns_data or {},
+        },
+        "latest_scan": {
+            "scan_id": str(latest_scan.get("id") or "") if latest_scan else "",
+            "status": str(latest_scan.get("status") or ""),
+            "started_at": latest_scan.get("started_at") if latest_scan else None,
+            "finished_at": latest_scan.get("finished_at") if latest_scan else None,
+            "error_message": str(latest_scan.get("error_message") or "")
+            if latest_scan
+            else "",
+            "plugins": scan_plugins,
+        },
+        "certificate": {
+            "available": bool(cert_result),
+            "summary": certificate_summary,
+            "full_result": cert_result or {},
+        },
+        "spoofing_check": spoofing_check,
+    }
+
+
+def _render_target_report_html(payload: dict) -> str:
+    target = payload.get("target") or {}
+    dns = payload.get("dns") or {}
+    latest_scan = payload.get("latest_scan") or {}
+    cert = payload.get("certificate") or {}
+    spoofing = payload.get("spoofing_check") or {}
+    theme = _report_theme_palette(payload.get("theme"))
+    hostname = str(target.get("hostname") or "unknown-host")
+    port = str(target.get("port") or "")
+    scan_plugins = latest_scan.get("plugins") or []
+
+    dns_data = dns.get("data") or {}
+    dmarc = dns_data.get("dmarc") or {}
+    dkim = dns_data.get("dkim") or {}
+    dkim_records = dkim.get("records") or []
+    dkim_summary = dkim.get("summary") or {}
+    m365 = dns_data.get("m365") or {}
+    m365_identity = m365.get("identity") or {}
+    m365_autodiscover = m365.get("autodiscover") or {}
+    cert_summary = cert.get("summary") or {}
+
+    plugin_rows = []
+    plugin_detail_cards = []
+    for item in scan_plugins:
+        name = str(item.get("plugin") or "unknown_plugin")
+        result = item.get("result") or {}
+        plugin_rows.append(
+            f"""
+            <tr>
+              <td>{html_escape(name)}</td>
+              <td>{html_escape(_plugin_result_summary(name, result))}</td>
+            </tr>
+            """
+        )
+        plugin_detail_cards.append(
+            f"""
+            <article class=\"card\">
+              <h4>{html_escape(name)}</h4>
+              <pre>{html_escape(_json_pretty(result))}</pre>
+            </article>
+            """
+        )
+    plugin_table_html = (
+        "\n".join(plugin_rows)
+        if plugin_rows
+        else "<tr><td colspan='2' class='muted'>No scan plugin results available.</td></tr>"
+    )
+    plugin_details_html = (
+        "\n".join(plugin_detail_cards)
+        if plugin_detail_cards
+        else "<p class='muted'>No detailed plugin payload available.</p>"
+    )
+
+    dkim_rows = []
+    for row in dkim_records if isinstance(dkim_records, list) else []:
+        dkim_rows.append(
+            f"""
+            <tr>
+              <td>{html_escape(_safe_text(row.get("fqdn")))}</td>
+              <td>{html_escape(_safe_text(row.get("selector")))}</td>
+              <td>{html_escape(_safe_text(row.get("key_type")))}</td>
+              <td>{html_escape(_safe_text(row.get("public_key_size_hint_bits")))}</td>
+              <td>{html_escape("yes" if row.get("weak_key_hint") else "no")}</td>
+              <td>{html_escape(_safe_text(row.get("record")))}</td>
+            </tr>
+            """
+        )
+    dkim_rows_html = (
+        "\n".join(dkim_rows)
+        if dkim_rows
+        else "<tr><td colspan='6' class='muted'>No DKIM records found for tested selectors/domains.</td></tr>"
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Comprehensive Report - {html_escape(hostname)}:{html_escape(port)}</title>
+  <style>
+    :root {{
+      --bg: {theme["primary_light"]};
+      --panel: #ffffff;
+      --border: {theme["border"]};
+      --text: {theme["text"]};
+      --muted: {theme["muted"]};
+      --head-text: #f4f8ff;
+    }}
+    body {{ font-family: "Segoe UI", Tahoma, Arial, sans-serif; margin: 20px; color: var(--text); background: var(--bg); }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    h2 {{ margin: 0 0 10px; font-size: 17px; }}
+    h3 {{ margin: 0 0 8px; font-size: 14px; }}
+    h4 {{ margin: 0 0 6px; font-size: 13px; }}
+    .meta {{ color: var(--muted); font-size: 12px; margin-bottom: 16px; }}
+    .section {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }}
+    .section-head {{ background: linear-gradient(120deg, {theme["primary_dark"]}, {theme["primary"]}); color: var(--head-text); padding: 10px 12px; font-weight: 700; letter-spacing: 0.2px; }}
+    .section-body {{ padding: 12px; }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ border: 1px solid var(--border); text-align: left; padding: 8px 9px; vertical-align: top; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }}
+    th {{ background: #edf3fb; color: #1f4364; font-weight: 700; }}
+    .kpi-grid {{ display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }}
+    .kpi {{ border: 1px solid var(--border); border-radius: 8px; padding: 9px; background: #f8fbff; }}
+    .kpi-label {{ display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }}
+    .kpi-value {{ font-size: 14px; font-weight: 700; color: {theme["primary_dark"]}; }}
+    .card {{ background: #f9fbff; border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12px; color: #13263f; }}
+    .muted {{ color: var(--muted); }}
+  </style>
+</head>
+<body>
+  <h1>Comprehensive Domain/Host Report</h1>
+  <p class="meta">
+    Target: <strong>{html_escape(hostname)}:{html_escape(port)}</strong><br>
+    Generated (UTC): {html_escape(str(payload.get("generated_at_utc") or "-"))}
+  </p>
+
+  <section class="section">
+    <div class="section-head">Summary</div>
+    <div class="section-body">
+      <div class="kpi-grid">
+        <div class="kpi"><span class="kpi-label">Hostname</span><span class="kpi-value">{html_escape(hostname)}</span></div>
+        <div class="kpi"><span class="kpi-label">Port</span><span class="kpi-value">{html_escape(port)}</span></div>
+        <div class="kpi"><span class="kpi-label">DNS Scope</span><span class="kpi-value">{html_escape(_safe_text(target.get("dns_scope")))}</span></div>
+        <div class="kpi"><span class="kpi-label">Scan Status</span><span class="kpi-value">{html_escape(_safe_text(latest_scan.get("status")))}</span></div>
+      </div>
+      <table>
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Target ID</td><td>{html_escape(_safe_text(target.get("id")))}</td></tr>
+          <tr><td>Enabled</td><td>{html_escape(str(bool(target.get("enabled"))))}</td></tr>
+          <tr><td>TLS Checks Enabled</td><td>{html_escape(str(bool(target.get("tls_checks_enabled"))))}</td></tr>
+          <tr><td>DNS Checks Enabled</td><td>{html_escape(str(bool(target.get("dns_checks_enabled"))))}</td></tr>
+          <tr><td>Scan Interval (min)</td><td>{html_escape(_safe_text(target.get("scan_interval_minutes")))}</td></tr>
+          <tr><td>Latest Scan ID</td><td>{html_escape(_safe_text(latest_scan.get("scan_id")))}</td></tr>
+          <tr><td>Latest Scan Started</td><td>{html_escape(_safe_text(latest_scan.get("started_at")))}</td></tr>
+          <tr><td>Latest Scan Finished</td><td>{html_escape(_safe_text(latest_scan.get("finished_at")))}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">Mail Spoofing Check</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Check</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Status</td><td>{html_escape(_safe_text(spoofing.get("status")))}</td></tr>
+          <tr><td>Summary</td><td>{html_escape(_safe_text(spoofing.get("summary")))}</td></tr>
+          <tr><td>SPF Record</td><td>{html_escape(_safe_text(spoofing.get("spf_record")))}</td></tr>
+          <tr><td>DMARC Policy</td><td>{html_escape(_safe_text(spoofing.get("dmarc_policy")))}</td></tr>
+          <tr><td>Has MX / A / AAAA</td><td>{html_escape(str(bool(spoofing.get("has_mx"))))} / {html_escape(str(bool(spoofing.get("has_a"))))} / {html_escape(str(bool(spoofing.get("has_aaaa"))))}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">DNS Data</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Record Type</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Status</td><td>{html_escape(_safe_text(dns.get("status")))}</td></tr>
+          <tr><td>Updated At</td><td>{html_escape(_safe_text(dns.get("updated_at")))}</td></tr>
+          <tr><td>SPF</td><td>{html_escape(_safe_text(dns_data.get("spf")))}</td></tr>
+          <tr><td>DMARC Record</td><td>{html_escape(_safe_text(dmarc.get("record")))}</td></tr>
+          <tr><td>DMARC Policy</td><td>{html_escape(_safe_text(dmarc.get("policy")))}</td></tr>
+          <tr><td>MX</td><td>{html_escape(_short_json(dns_data.get("mx") or []))}</td></tr>
+          <tr><td>A</td><td>{html_escape(_short_json(dns_data.get("a") or []))}</td></tr>
+          <tr><td>AAAA</td><td>{html_escape(_short_json(dns_data.get("aaaa") or []))}</td></tr>
+          <tr><td>DKIM Summary</td><td>{html_escape(_short_json(dkim.get("summary") or {}))}</td></tr>
+          <tr><td>WHOIS</td><td>{html_escape(_short_json(dns_data.get("whois") or {}))}</td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:10px;">Full DNS JSON</h3>
+      <pre>{html_escape(_json_pretty(dns_data or {}))}</pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">Email Authentication (SPF / DKIM / DMARC)</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>SPF Record</td><td>{html_escape(_safe_text(dns_data.get("spf")))}</td></tr>
+          <tr><td>DMARC Domain</td><td>{html_escape(_safe_text(dmarc.get("domain")))}</td></tr>
+          <tr><td>DMARC Record</td><td>{html_escape(_safe_text(dmarc.get("record")))}</td></tr>
+          <tr><td>DMARC Policy</td><td>{html_escape(_safe_text(dmarc.get("policy")))}</td></tr>
+          <tr><td>DKIM Candidate Domains</td><td>{html_escape(_short_json(dkim.get("domains") or []))}</td></tr>
+          <tr><td>DKIM Selectors</td><td>{html_escape(_short_json(dkim.get("selectors") or []))}</td></tr>
+          <tr><td>DKIM Query Summary</td><td>{html_escape(_short_json(dkim_summary))}</td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:10px;">DKIM Records</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>FQDN</th>
+            <th>Selector</th>
+            <th>Key Type</th>
+            <th>Bits</th>
+            <th>Weak Key</th>
+            <th>Record</th>
+          </tr>
+        </thead>
+        <tbody>
+          {dkim_rows_html}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">Microsoft 365 Services</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Hosted</td><td>{html_escape(str(bool(m365.get("hosted"))))}</td></tr>
+          <tr><td>Confidence</td><td>{html_escape(_safe_text(m365.get("confidence")))}</td></tr>
+          <tr><td>Tenant Assigned</td><td>{html_escape(str(bool(m365.get("tenant_assigned"))))}</td></tr>
+          <tr><td>Service Usage</td><td>{html_escape(str(bool(m365.get("service_usage"))))}</td></tr>
+          <tr><td>Tenant Hints</td><td>{html_escape(_short_json(m365.get("tenant_hints") or []))}</td></tr>
+          <tr><td>MS Verification Tokens</td><td>{html_escape(_short_json(m365.get("ms_verification_tokens") or []))}</td></tr>
+          <tr><td>Signals</td><td>{html_escape(_short_json(m365.get("signals") or []))}</td></tr>
+          <tr><td>Autodiscover Target</td><td>{html_escape(_safe_text(m365_autodiscover.get("target")))}</td></tr>
+          <tr><td>Tenant ID</td><td>{html_escape(_safe_text(m365_identity.get("tenant_id")))}</td></tr>
+          <tr><td>Namespace Type</td><td>{html_escape(_safe_text(m365_identity.get("namespace_type")))}</td></tr>
+          <tr><td>Domain Checked</td><td>{html_escape(_safe_text(m365_identity.get("domain_checked")))}</td></tr>
+          <tr><td>Federation Brand</td><td>{html_escape(_safe_text(m365_identity.get("federation_brand_name")))}</td></tr>
+          <tr><td>Cloud Instance</td><td>{html_escape(_safe_text(m365_identity.get("cloud_instance_name")))}</td></tr>
+          <tr><td>Tenant Region</td><td>{html_escape(_safe_text(m365_identity.get("tenant_region_scope")))}</td></tr>
+          <tr><td>Issuer</td><td>{html_escape(_safe_text(m365_identity.get("issuer")))}</td></tr>
+          <tr><td>Auth URL</td><td>{html_escape(_safe_text(m365_identity.get("auth_url")))}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">Certificate Data</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Certificate Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Available</td><td>{html_escape(str(bool(cert.get("available"))))}</td></tr>
+          <tr><td>Common Name</td><td>{html_escape(_safe_text(cert_summary.get("common_name")))}</td></tr>
+          <tr><td>Issuer</td><td>{html_escape(_safe_text(cert_summary.get("issuer")))}</td></tr>
+          <tr><td>Not Before</td><td>{html_escape(_safe_text(cert_summary.get("not_before")))}</td></tr>
+          <tr><td>Not After</td><td>{html_escape(_safe_text(cert_summary.get("not_after")))}</td></tr>
+          <tr><td>SANs</td><td>{html_escape(_short_json(cert_summary.get("subject_alternative_name") or []))}</td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:10px;">Full Certificate JSON</h3>
+      <pre>{html_escape(_json_pretty(cert.get("full_result") or {}))}</pre>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head">Latest Scan Results</div>
+    <div class="section-body">
+      <table>
+        <thead><tr><th>Plugin</th><th>Summary</th></tr></thead>
+        <tbody>
+          {plugin_table_html}
+        </tbody>
+      </table>
+      <h3 style="margin-top:10px;">Detailed Plugin Payloads</h3>
+      {plugin_details_html}
+    </div>
+  </section>
+</body>
+</html>"""
+
+
+def _target_report_text(payload: dict) -> str:
+    target = payload.get("target") or {}
+    dns = payload.get("dns") or {}
+    latest_scan = payload.get("latest_scan") or {}
+    cert = payload.get("certificate") or {}
+    spoofing = payload.get("spoofing_check") or {}
+    sections = []
+    sections.append("Comprehensive Domain/Host Report")
+    sections.append("=" * 38)
+    sections.append(
+        f"Generated (UTC): {payload.get('generated_at_utc') or '-'}"
+    )
+    sections.append("")
+    sections.append("Summary Table")
+    sections.append("-" * 13)
+    sections.append(
+        _ascii_table(
+            ["Field", "Value"],
+            [
+                ["Target ID", _safe_text(target.get("id"))],
+                ["Hostname", _safe_text(target.get("hostname"))],
+                ["Port", _safe_text(target.get("port"))],
+                ["DNS Scope", _safe_text(target.get("dns_scope"))],
+                ["Enabled", str(bool(target.get("enabled")))],
+                ["TLS Checks Enabled", str(bool(target.get("tls_checks_enabled")))],
+                ["DNS Checks Enabled", str(bool(target.get("dns_checks_enabled")))],
+                ["Scan Interval (min)", _safe_text(target.get("scan_interval_minutes"))],
+            ],
+        )
+    )
+    sections.append("")
+    sections.append("Spoofing Check Table")
+    sections.append("-" * 20)
+    sections.append(
+        _ascii_table(
+            ["Check", "Value"],
+            [
+                ["Status", _safe_text(spoofing.get("status"))],
+                ["Summary", _safe_text(spoofing.get("summary"))],
+                ["SPF Record", _safe_text(spoofing.get("spf_record"))],
+                ["DMARC Policy", _safe_text(spoofing.get("dmarc_policy"))],
+                ["Has MX", str(bool(spoofing.get("has_mx")))],
+                ["Has A", str(bool(spoofing.get("has_a")))],
+                ["Has AAAA", str(bool(spoofing.get("has_aaaa")))],
+            ],
+        )
+    )
+    sections.append("")
+    sections.append("DNS Table")
+    sections.append("-" * 9)
+    dns_data = dns.get("data") or {}
+    dmarc = dns_data.get("dmarc") or {}
+    sections.append(
+        _ascii_table(
+            ["Record Type", "Value"],
+            [
+                ["Status", _safe_text(dns.get("status"))],
+                ["Updated At", _safe_text(dns.get("updated_at"))],
+                ["SPF", _safe_text(dns_data.get("spf"))],
+                ["DMARC Policy", _safe_text(dmarc.get("policy"))],
+                ["MX", _short_json(dns_data.get("mx") or [], max_len=140)],
+                ["A", _short_json(dns_data.get("a") or [], max_len=140)],
+                ["AAAA", _short_json(dns_data.get("aaaa") or [], max_len=140)],
+            ],
+        )
+    )
+    sections.append(_json_pretty(dns.get("data") or {}))
+    sections.append("")
+    sections.append("Certificate Table")
+    sections.append("-" * 17)
+    cert_summary = cert.get("summary") or {}
+    sections.append(
+        _ascii_table(
+            ["Field", "Value"],
+            [
+                ["Available", str(bool(cert.get("available")))],
+                ["Common Name", _safe_text(cert_summary.get("common_name"))],
+                ["Issuer", _safe_text(cert_summary.get("issuer"))],
+                ["Not Before", _safe_text(cert_summary.get("not_before"))],
+                ["Not After", _safe_text(cert_summary.get("not_after"))],
+                [
+                    "SANs",
+                    _short_json(
+                        cert_summary.get("subject_alternative_name") or [],
+                        max_len=140,
+                    ),
+                ],
+            ],
+        )
+    )
+    sections.append("Raw Certificate Result:")
+    sections.append(_json_pretty(cert.get("full_result") or {}))
+    sections.append("")
+    sections.append("Latest Scan Table")
+    sections.append("-" * 16)
+    sections.append(
+        _ascii_table(
+            ["Field", "Value"],
+            [
+                ["Scan ID", _safe_text(latest_scan.get("scan_id"))],
+                ["Status", _safe_text(latest_scan.get("status"))],
+                ["Started At", _safe_text(latest_scan.get("started_at"))],
+                ["Finished At", _safe_text(latest_scan.get("finished_at"))],
+                ["Error Message", _safe_text(latest_scan.get("error_message"))],
+            ],
+        )
+    )
+    sections.append("")
+    sections.append("Per-plugin Summary Table")
+    sections.append("-" * 24)
+    plugins = latest_scan.get("plugins") or []
+    if not plugins:
+        sections.append("No scan plugin results available.")
+    else:
+        plugin_rows = []
+        for item in plugins:
+            pname = _safe_text(item.get("plugin"))
+            presult = item.get("result") or {}
+            plugin_rows.append([pname, _plugin_result_summary(pname, presult)])
+        sections.append(_ascii_table(["Plugin", "Summary"], plugin_rows))
+        sections.append("")
+        sections.append("Per-plugin Raw JSON")
+        sections.append("-" * 19)
+        for item in plugins:
+            sections.append(f"[{item.get('plugin') or 'unknown_plugin'}]")
+            sections.append(_json_pretty(item.get("result") or {}))
+            sections.append("")
+
+    return "\n".join(str(s) for s in sections)
+
+
+def _build_fancy_pdf_report(payload: dict) -> bytes:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            Paragraph,
+            Preformatted,
+            SimpleDocTemplate,
+            Spacer,
+            Table,
+            TableStyle,
+        )
+    except Exception:
+        return _build_styled_pdf_fallback(payload)
+
+    theme = _report_theme_palette(payload.get("theme"))
+    primary_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary"]))
+    primary_dark_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary_dark"]))
+    primary_darker_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary_darker"]))
+    primary_light_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary_light"]))
+    border_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["border"]))
+    text_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["text"]))
+    muted_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["muted"]))
+
+    target = payload.get("target") or {}
+    dns = payload.get("dns") or {}
+    latest_scan = payload.get("latest_scan") or {}
+    cert = payload.get("certificate") or {}
+    spoofing = payload.get("spoofing_check") or {}
+    dns_data = dns.get("data") or {}
+    dmarc = dns_data.get("dmarc") or {}
+    dkim = dns_data.get("dkim") or {}
+    dkim_summary = dkim.get("summary") or {}
+    dkim_records = dkim.get("records") or []
+    m365 = dns_data.get("m365") or {}
+    m365_identity = m365.get("identity") or {}
+    m365_autodiscover = m365.get("autodiscover") or {}
+    cert_summary = cert.get("summary") or {}
+    plugins = latest_scan.get("plugins") or []
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=22,
+        textColor=colors.Color(*primary_darker_rgb),
+        spaceAfter=6,
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        textColor=colors.Color(*muted_rgb),
+        spaceAfter=10,
+    )
+    section_style = ParagraphStyle(
+        "ReportSection",
+        parent=styles["Heading3"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        textColor=colors.white,
+        backColor=colors.Color(*primary_rgb),
+        borderPadding=6,
+        spaceBefore=6,
+        spaceAfter=6,
+    )
+    normal_style = ParagraphStyle(
+        "ReportNormal",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        leading=11,
+        textColor=colors.Color(*text_rgb),
+    )
+    code_style = ParagraphStyle(
+        "ReportCode",
+        parent=styles["Code"],
+        fontName="Courier",
+        fontSize=7.5,
+        leading=9,
+        textColor=colors.Color(*text_rgb),
+    )
+    table_cell_style = ParagraphStyle(
+        "ReportTableCell",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=10,
+        textColor=colors.Color(*text_rgb),
+        splitLongWords=True,
+        wordWrap="CJK",
+    )
+    table_header_style = ParagraphStyle(
+        "ReportTableHeader",
+        parent=table_cell_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.Color(*primary_dark_rgb),
+    )
+
+    def _cell_with_wrap_hints(value: str, header: bool = False):
+        text = html_escape(_pdf_safe_text(value))
+        style = table_header_style if header else table_cell_style
+        return Paragraph(text, style)
+
+    def _table(data_rows: list[list[str]], col_widths=None, header: bool = True):
+        rows = []
+        for row_idx, row in enumerate(data_rows):
+            is_header_row = header and row_idx == 0
+            rows.append(
+                [_cell_with_wrap_hints(cell, header=is_header_row) for cell in row]
+            )
+        tbl = Table(rows, colWidths=col_widths, hAlign="LEFT")
+        style_cmds = [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.Color(*border_rgb)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]
+        if header and rows:
+            style_cmds.extend(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.Color(*primary_light_rgb)),
+                ]
+            )
+        tbl.setStyle(TableStyle(style_cmds))
+        return tbl
+
+    flow = []
+    flow.append(Paragraph("Comprehensive Domain/Host Report", title_style))
+    flow.append(
+        Paragraph(
+            html_escape(
+                f"Target: {_safe_text(target.get('hostname'))}:{_safe_text(target.get('port'))} | "
+                f"Generated (UTC): {_safe_text(payload.get('generated_at_utc'))}"
+            ),
+            subtitle_style,
+        )
+    )
+
+    flow.append(Paragraph("Summary", section_style))
+    flow.append(
+        _table(
+            [
+                ["Field", "Value"],
+                ["Target ID", _safe_text(target.get("id"))],
+                ["Hostname", _safe_text(target.get("hostname"))],
+                ["Port", _safe_text(target.get("port"))],
+                ["DNS Scope", _safe_text(target.get("dns_scope"))],
+                ["Enabled", str(bool(target.get("enabled")))],
+                ["TLS Checks Enabled", str(bool(target.get("tls_checks_enabled")))],
+                ["DNS Checks Enabled", str(bool(target.get("dns_checks_enabled")))],
+                ["Latest Scan Status", _safe_text(latest_scan.get("status"))],
+                ["Latest Scan ID", _safe_text(latest_scan.get("scan_id"))],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("Mail Spoofing Check", section_style))
+    flow.append(
+        _table(
+            [
+                ["Check", "Value"],
+                ["Status", _safe_text(spoofing.get("status"))],
+                ["Summary", _safe_text(spoofing.get("summary"))],
+                ["SPF Record", _safe_text(spoofing.get("spf_record"))],
+                ["DMARC Policy", _safe_text(spoofing.get("dmarc_policy"))],
+                [
+                    "Has MX / A / AAAA",
+                    f"{bool(spoofing.get('has_mx'))} / {bool(spoofing.get('has_a'))} / {bool(spoofing.get('has_aaaa'))}",
+                ],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("DNS Data", section_style))
+    flow.append(
+        _table(
+            [
+                ["Record Type", "Value"],
+                ["Status", _safe_text(dns.get("status"))],
+                ["Updated At", _safe_text(dns.get("updated_at"))],
+                ["SPF", _safe_text(dns_data.get("spf"))],
+                ["DMARC Policy", _safe_text(dmarc.get("policy"))],
+                ["MX", _short_json(dns_data.get("mx") or [], max_len=180)],
+                ["A", _short_json(dns_data.get("a") or [], max_len=180)],
+                ["AAAA", _short_json(dns_data.get("aaaa") or [], max_len=180)],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 4))
+    flow.append(Paragraph("DNS Raw JSON", normal_style))
+    flow.append(Preformatted(_json_pretty(dns_data), code_style))
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("Email Authentication (SPF / DKIM / DMARC)", section_style))
+    flow.append(
+        _table(
+            [
+                ["Field", "Value"],
+                ["SPF Record", _safe_text(dns_data.get("spf"))],
+                ["DMARC Domain", _safe_text(dmarc.get("domain"))],
+                ["DMARC Record", _safe_text(dmarc.get("record"))],
+                ["DMARC Policy", _safe_text(dmarc.get("policy"))],
+                ["DKIM Candidate Domains", _short_json(dkim.get("domains") or [], max_len=360)],
+                ["DKIM Selectors", _short_json(dkim.get("selectors") or [], max_len=360)],
+                ["DKIM Query Summary", _short_json(dkim_summary, max_len=360)],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 4))
+    flow.append(Paragraph("DKIM Records", normal_style))
+    dkim_rows = [
+        ["FQDN", "Selector", "Key", "Bits", "Weak", "Record"],
+    ]
+    for row in dkim_records if isinstance(dkim_records, list) else []:
+        dkim_rows.append(
+            [
+                _safe_text(row.get("fqdn")),
+                _safe_text(row.get("selector")),
+                _safe_text(row.get("key_type")),
+                _safe_text(row.get("public_key_size_hint_bits")),
+                "yes" if row.get("weak_key_hint") else "no",
+                _safe_text(row.get("record")),
+            ]
+        )
+    if len(dkim_rows) == 1:
+        dkim_rows.append(["-", "-", "-", "-", "-", "No DKIM records found for tested selectors/domains."])
+    flow.append(
+        _table(
+            dkim_rows,
+            col_widths=[32 * mm, 22 * mm, 18 * mm, 14 * mm, 14 * mm, 80 * mm],
+        )
+    )
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("Microsoft 365 Services", section_style))
+    flow.append(
+        _table(
+            [
+                ["Field", "Value"],
+                ["Hosted", str(bool(m365.get("hosted")))],
+                ["Confidence", _safe_text(m365.get("confidence"))],
+                ["Tenant Assigned", str(bool(m365.get("tenant_assigned")))],
+                ["Service Usage", str(bool(m365.get("service_usage")))],
+                ["Tenant Hints", _short_json(m365.get("tenant_hints") or [], max_len=360)],
+                ["MS Verification Tokens", _short_json(m365.get("ms_verification_tokens") or [], max_len=360)],
+                ["Signals", _short_json(m365.get("signals") or [], max_len=360)],
+                ["Autodiscover Target", _safe_text(m365_autodiscover.get("target"))],
+                ["Tenant ID", _safe_text(m365_identity.get("tenant_id"))],
+                ["Namespace Type", _safe_text(m365_identity.get("namespace_type"))],
+                ["Domain Checked", _safe_text(m365_identity.get("domain_checked"))],
+                ["Federation Brand", _safe_text(m365_identity.get("federation_brand_name"))],
+                ["Cloud Instance", _safe_text(m365_identity.get("cloud_instance_name"))],
+                ["Tenant Region", _safe_text(m365_identity.get("tenant_region_scope"))],
+                ["Issuer", _safe_text(m365_identity.get("issuer"))],
+                ["Auth URL", _safe_text(m365_identity.get("auth_url"))],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("Certificate Data", section_style))
+    flow.append(
+        _table(
+            [
+                ["Certificate Field", "Value"],
+                ["Available", str(bool(cert.get("available")))],
+                ["Common Name", _safe_text(cert_summary.get("common_name"))],
+                ["Issuer", _safe_text(cert_summary.get("issuer"))],
+                ["Not Before", _safe_text(cert_summary.get("not_before"))],
+                ["Not After", _safe_text(cert_summary.get("not_after"))],
+                [
+                    "SANs",
+                    _short_json(
+                        cert_summary.get("subject_alternative_name") or [], max_len=180
+                    ),
+                ],
+            ],
+            col_widths=[58 * mm, 122 * mm],
+        )
+    )
+    flow.append(Spacer(1, 4))
+    flow.append(Paragraph("Certificate Raw JSON", normal_style))
+    flow.append(Preformatted(_json_pretty(cert.get("full_result") or {}), code_style))
+    flow.append(Spacer(1, 6))
+
+    flow.append(Paragraph("Latest Scan Plugin Summary", section_style))
+    plugin_table_rows = [["Plugin", "Summary"]]
+    for item in plugins:
+        pname = _safe_text(item.get("plugin"))
+        presult = item.get("result") or {}
+        plugin_table_rows.append([pname, _plugin_result_summary(pname, presult)])
+    if len(plugin_table_rows) == 1:
+        plugin_table_rows.append(["-", "No scan plugin results available."])
+    flow.append(_table(plugin_table_rows, col_widths=[58 * mm, 122 * mm]))
+    flow.append(Spacer(1, 4))
+    flow.append(Paragraph("Detailed Plugin JSON", normal_style))
+    for item in plugins:
+        pname = _safe_text(item.get("plugin"))
+        flow.append(Paragraph(f"Plugin: {html_escape(pname)}", normal_style))
+        flow.append(Preformatted(_json_pretty(item.get("result") or {}), code_style))
+        flow.append(Spacer(1, 3))
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=12 * mm,
+        rightMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+        title=f"Comprehensive Report - {_safe_text(target.get('hostname'))}",
+        author="TLSAuditHub",
+    )
+    doc.build(flow)
+    return buffer.getvalue()
+
+
+def _build_styled_pdf_fallback(payload: dict) -> bytes:
+    target = payload.get("target") or {}
+    dns = payload.get("dns") or {}
+    latest_scan = payload.get("latest_scan") or {}
+    cert = payload.get("certificate") or {}
+    spoofing = payload.get("spoofing_check") or {}
+    dns_data = dns.get("data") or {}
+    dmarc = dns_data.get("dmarc") or {}
+    dkim = dns_data.get("dkim") or {}
+    dkim_summary = dkim.get("summary") or {}
+    dkim_records = dkim.get("records") or []
+    m365 = dns_data.get("m365") or {}
+    m365_identity = m365.get("identity") or {}
+    m365_autodiscover = m365.get("autodiscover") or {}
+    cert_summary = cert.get("summary") or {}
+    plugins = latest_scan.get("plugins") or []
+    theme = _report_theme_palette(payload.get("theme"))
+    primary_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary"]))
+    primary_dark_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary_dark"]))
+    border_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["border"]))
+    text_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["text"]))
+    light_rgb = tuple(v / 255.0 for v in _hex_to_rgb_tuple(theme["primary_light"]))
+
+    page_w = 595.0
+    page_h = 842.0
+    margin = 28.0
+    content_w = page_w - (2 * margin)
+    line_h = 10.0
+    table_cell_pad = 3.0
+
+    pages: list[list[str]] = []
+    page_commands: list[str] = []
+    y = page_h - margin
+
+    def new_page():
+        nonlocal page_commands, y
+        page_commands = []
+        pages.append(page_commands)
+        y = page_h - margin
+
+    def cmd(value: str):
+        page_commands.append(value)
+
+    def need(height: float):
+        nonlocal y
+        if y - height < margin:
+            new_page()
+
+    def draw_rect(x: float, y0: float, w: float, h: float, fill_rgb=None, stroke_rgb=None):
+        if fill_rgb is not None:
+            cmd(f"{fill_rgb[0]:.3f} {fill_rgb[1]:.3f} {fill_rgb[2]:.3f} rg")
+        if stroke_rgb is not None:
+            cmd(f"{stroke_rgb[0]:.3f} {stroke_rgb[1]:.3f} {stroke_rgb[2]:.3f} RG")
+        mode = "B" if fill_rgb is not None and stroke_rgb is not None else "f" if fill_rgb is not None else "S"
+        cmd(f"{x:.2f} {y0:.2f} {w:.2f} {h:.2f} re {mode}")
+
+    def draw_text(
+        x: float,
+        y0: float,
+        text: str,
+        size: float = 9.0,
+        bold: bool = False,
+        rgb=text_rgb,
+    ):
+        font_name = "/F2" if bold else "/F1"
+        safe = _pdf_escape(_pdf_safe_text(text))
+        cmd(f"{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f} rg")
+        cmd(f"BT {font_name} {size:.2f} Tf {x:.2f} {y0:.2f} Td ({safe}) Tj ET")
+
+    def section(title: str):
+        nonlocal y
+        need(24)
+        h = 18.0
+        y0 = y - h
+        draw_rect(margin, y0, content_w, h, fill_rgb=primary_rgb, stroke_rgb=primary_rgb)
+        draw_text(margin + 6, y0 + 5, title, size=10, bold=True, rgb=(1, 1, 1))
+        y = y0 - 8
+
+    def table(headers: list[str], rows: list[list[str]], col_widths: list[float]):
+        nonlocal y
+        col_char_limits = [max(8, int((w - (2 * table_cell_pad)) / 4.7)) for w in col_widths]
+
+        def wrap_cell(value: str, col_idx: int) -> list[str]:
+            text = _pdf_safe_text(value)
+            wrapped = textwrap.wrap(
+                text,
+                width=col_char_limits[col_idx],
+                break_long_words=True,
+                break_on_hyphens=False,
+            )
+            return wrapped or [""]
+
+        def draw_row(cells: list[list[str]], is_header: bool = False):
+            nonlocal y
+            max_lines = max(len(c) for c in cells) if cells else 1
+            row_h = (max_lines * line_h) + 6
+            need(row_h + 2)
+            y0 = y - row_h
+            fill = light_rgb if is_header else (1, 1, 1)
+            draw_rect(margin, y0, content_w, row_h, fill_rgb=fill, stroke_rgb=border_rgb)
+            x_cursor = margin
+            for idx, w in enumerate(col_widths):
+                if idx > 0:
+                    cmd(f"{border_rgb[0]:.3f} {border_rgb[1]:.3f} {border_rgb[2]:.3f} RG")
+                    cmd(f"{x_cursor:.2f} {y0:.2f} m {x_cursor:.2f} {y:.2f} l S")
+                for line_idx, line in enumerate(cells[idx]):
+                    ty = y - 11 - (line_idx * line_h)
+                    draw_text(
+                        x_cursor + table_cell_pad,
+                        ty,
+                        line,
+                        size=8.5,
+                        bold=is_header,
+                        rgb=text_rgb,
+                    )
+                x_cursor += w
+            y = y0
+
+        header_cells = [wrap_cell(headers[idx], idx) for idx in range(len(headers))]
+        draw_row(header_cells, is_header=True)
+        for row in rows:
+            padded = [row[idx] if idx < len(row) else "" for idx in range(len(headers))]
+            row_cells = [wrap_cell(padded[idx], idx) for idx in range(len(headers))]
+            if y - ((max(len(c) for c in row_cells) * line_h) + 12) < margin:
+                new_page()
+                header_cells = [wrap_cell(headers[idx], idx) for idx in range(len(headers))]
+                draw_row(header_cells, is_header=True)
+            draw_row(row_cells, is_header=False)
+        y -= 8
+
+    new_page()
+
+    need(50)
+    header_h = 30.0
+    y0 = y - header_h
+    draw_rect(margin, y0, content_w, header_h, fill_rgb=primary_dark_rgb, stroke_rgb=primary_dark_rgb)
+    draw_text(margin + 8, y0 + 16, "Comprehensive Domain/Host Report", size=14, bold=True, rgb=(1, 1, 1))
+    subtitle = (
+        f"{_safe_text(target.get('hostname'))}:{_safe_text(target.get('port'))} | "
+        f"Generated (UTC): {_safe_text(payload.get('generated_at_utc'))}"
+    )
+    draw_text(margin + 8, y0 + 5, subtitle, size=8.5, bold=False, rgb=(0.93, 0.96, 1.0))
+    y = y0 - 10
+
+    section("Summary")
+    table(
+        ["Field", "Value"],
+        [
+            ["Target ID", _safe_text(target.get("id"))],
+            ["Hostname", _safe_text(target.get("hostname"))],
+            ["Port", _safe_text(target.get("port"))],
+            ["DNS Scope", _safe_text(target.get("dns_scope"))],
+            ["Enabled", str(bool(target.get("enabled")))],
+            ["TLS Checks Enabled", str(bool(target.get("tls_checks_enabled")))],
+            ["DNS Checks Enabled", str(bool(target.get("dns_checks_enabled")))],
+            ["Latest Scan Status", _safe_text(latest_scan.get("status"))],
+            ["Latest Scan ID", _safe_text(latest_scan.get("scan_id"))],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("Mail Spoofing Check")
+    table(
+        ["Check", "Value"],
+        [
+            ["Status", _safe_text(spoofing.get("status"))],
+            ["Summary", _safe_text(spoofing.get("summary"))],
+            ["SPF Record", _safe_text(spoofing.get("spf_record"))],
+            ["DMARC Policy", _safe_text(spoofing.get("dmarc_policy"))],
+            [
+                "Has MX / A / AAAA",
+                f"{bool(spoofing.get('has_mx'))} / {bool(spoofing.get('has_a'))} / {bool(spoofing.get('has_aaaa'))}",
+            ],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("DNS Data")
+    table(
+        ["Record Type", "Value"],
+        [
+            ["Status", _safe_text(dns.get("status"))],
+            ["Updated At", _safe_text(dns.get("updated_at"))],
+            ["SPF", _safe_text(dns_data.get("spf"))],
+            ["DMARC Policy", _safe_text(dmarc.get("policy"))],
+            ["MX", _short_json(dns_data.get("mx") or [], max_len=180)],
+            ["A", _short_json(dns_data.get("a") or [], max_len=180)],
+            ["AAAA", _short_json(dns_data.get("aaaa") or [], max_len=180)],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("Email Authentication (SPF / DKIM / DMARC)")
+    table(
+        ["Field", "Value"],
+        [
+            ["SPF Record", _safe_text(dns_data.get("spf"))],
+            ["DMARC Domain", _safe_text(dmarc.get("domain"))],
+            ["DMARC Record", _safe_text(dmarc.get("record"))],
+            ["DMARC Policy", _safe_text(dmarc.get("policy"))],
+            ["DKIM Candidate Domains", _short_json(dkim.get("domains") or [], max_len=180)],
+            ["DKIM Selectors", _short_json(dkim.get("selectors") or [], max_len=180)],
+            ["DKIM Query Summary", _short_json(dkim_summary, max_len=180)],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("DKIM Records")
+    dkim_rows = []
+    for row in dkim_records if isinstance(dkim_records, list) else []:
+        dkim_rows.append(
+            [
+                _safe_text(row.get("fqdn")),
+                _safe_text(row.get("selector")),
+                _safe_text(row.get("key_type")),
+                _safe_text(row.get("public_key_size_hint_bits")),
+                "yes" if row.get("weak_key_hint") else "no",
+                _safe_text(row.get("record")),
+            ]
+        )
+    if not dkim_rows:
+        dkim_rows = [["-", "-", "-", "-", "-", "No DKIM records found for tested selectors/domains."]]
+    table(
+        ["FQDN", "Selector", "Key", "Bits", "Weak", "Record"],
+        dkim_rows,
+        [90.0, 70.0, 45.0, 30.0, 30.0, content_w - 265.0],
+    )
+
+    section("Microsoft 365 Services")
+    table(
+        ["Field", "Value"],
+        [
+            ["Hosted", str(bool(m365.get("hosted")))],
+            ["Confidence", _safe_text(m365.get("confidence"))],
+            ["Tenant Assigned", str(bool(m365.get("tenant_assigned")))],
+            ["Service Usage", str(bool(m365.get("service_usage")))],
+            ["Tenant Hints", _short_json(m365.get("tenant_hints") or [], max_len=180)],
+            ["MS Verification Tokens", _short_json(m365.get("ms_verification_tokens") or [], max_len=180)],
+            ["Signals", _short_json(m365.get("signals") or [], max_len=180)],
+            ["Autodiscover Target", _safe_text(m365_autodiscover.get("target"))],
+            ["Tenant ID", _safe_text(m365_identity.get("tenant_id"))],
+            ["Namespace Type", _safe_text(m365_identity.get("namespace_type"))],
+            ["Domain Checked", _safe_text(m365_identity.get("domain_checked"))],
+            ["Federation Brand", _safe_text(m365_identity.get("federation_brand_name"))],
+            ["Cloud Instance", _safe_text(m365_identity.get("cloud_instance_name"))],
+            ["Tenant Region", _safe_text(m365_identity.get("tenant_region_scope"))],
+            ["Issuer", _safe_text(m365_identity.get("issuer"))],
+            ["Auth URL", _safe_text(m365_identity.get("auth_url"))],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("Certificate Data")
+    table(
+        ["Certificate Field", "Value"],
+        [
+            ["Available", str(bool(cert.get("available")))],
+            ["Common Name", _safe_text(cert_summary.get("common_name"))],
+            ["Issuer", _safe_text(cert_summary.get("issuer"))],
+            ["Not Before", _safe_text(cert_summary.get("not_before"))],
+            ["Not After", _safe_text(cert_summary.get("not_after"))],
+            [
+                "SANs",
+                _short_json(
+                    cert_summary.get("subject_alternative_name") or [],
+                    max_len=180,
+                ),
+            ],
+        ],
+        [160.0, content_w - 160.0],
+    )
+
+    section("Latest Scan Plugin Summary")
+    plugin_rows = []
+    for item in plugins:
+        pname = _safe_text(item.get("plugin"))
+        presult = item.get("result") or {}
+        plugin_rows.append([pname, _plugin_result_summary(pname, presult)])
+    if not plugin_rows:
+        plugin_rows = [["-", "No scan plugin results available."]]
+    table(["Plugin", "Summary"], plugin_rows, [160.0, content_w - 160.0])
+
+    objects: list[tuple[int, bytes]] = []
+    objects.append((1, b"<< /Type /Catalog /Pages 2 0 R >>"))
+    objects.append((2, b"<< /Type /Pages /Kids [] /Count 0 >>"))
+    objects.append((3, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"))
+    objects.append((4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"))
+
+    page_obj_ids = []
+    next_id = 5
+    for page_cmds in pages:
+        page_obj_id = next_id
+        content_obj_id = next_id + 1
+        next_id += 2
+        page_obj_ids.append(page_obj_id)
+        stream = ("\n".join(page_cmds) + "\n").encode("latin-1", errors="replace")
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {int(page_w)} {int(page_h)}] "
+            f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_obj_id} 0 R >>"
+        ).encode("latin-1")
+        content_obj = (
+            f"<< /Length {len(stream)} >>\nstream\n".encode("latin-1")
+            + stream
+            + b"endstream"
+        )
+        objects.append((page_obj_id, page_obj))
+        objects.append((content_obj_id, content_obj))
+
+    kids = " ".join(f"{pid} 0 R" for pid in page_obj_ids)
+    objects[1] = (
+        2,
+        f"<< /Type /Pages /Kids [{kids}] /Count {len(page_obj_ids)} >>".encode(
+            "latin-1"
+        ),
+    )
+
+    objects_sorted = sorted(objects, key=lambda item: item[0])
+    output = bytearray()
+    output.extend(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets: dict[int, int] = {}
+    for obj_id, obj_body in objects_sorted:
+        offsets[obj_id] = len(output)
+        output.extend(f"{obj_id} 0 obj\n".encode("latin-1"))
+        output.extend(obj_body)
+        output.extend(b"\nendobj\n")
+
+    xref_start = len(output)
+    size = max(obj_id for obj_id, _ in objects_sorted) + 1
+    output.extend(f"xref\n0 {size}\n".encode("latin-1"))
+    output.extend(b"0000000000 65535 f \n")
+    for obj_id in range(1, size):
+        offset = offsets.get(obj_id, 0)
+        output.extend(f"{offset:010d} 00000 n \n".encode("latin-1"))
+
+    output.extend(
+        (
+            f"trailer\n<< /Size {size} /Root 1 0 R >>\n"
+            f"startxref\n{xref_start}\n%%EOF\n"
+        ).encode("latin-1")
+    )
+    return bytes(output)
+
+
+def _pdf_escape(value: str) -> str:
+    return (
+        _pdf_safe_text(value or "")
+        .replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
+
+
+def _build_simple_text_pdf(text_content: str) -> bytes:
+    page_w = 612
+    page_h = 792
+    margin_left = 36
+    margin_bottom = 36
+    start_y = 760
+    line_height = 12
+    max_chars = 96
+    max_lines_per_page = max(1, int((start_y - margin_bottom) / line_height))
+
+    logical_lines = []
+    for raw_line in str(text_content or "").splitlines():
+        chunks = textwrap.wrap(
+            raw_line,
+            width=max_chars,
+            replace_whitespace=False,
+            drop_whitespace=False,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+        logical_lines.extend(chunks or [""])
+    if not logical_lines:
+        logical_lines = [""]
+
+    pages = []
+    for idx in range(0, len(logical_lines), max_lines_per_page):
+        pages.append(logical_lines[idx : idx + max_lines_per_page])
+    if not pages:
+        pages = [[""]]
+
+    def _page_stream(lines: list[str]) -> bytes:
+        commands = ["BT", "/F1 10 Tf", f"{margin_left} {start_y} Td"]
+        for i, line in enumerate(lines):
+            if i > 0:
+                commands.append(f"0 -{line_height} Td")
+            commands.append(f"({_pdf_escape(line)}) Tj")
+        commands.append("ET")
+        return ("\n".join(commands) + "\n").encode("latin-1", errors="replace")
+
+    objects = []
+    objects.append((1, b"<< /Type /Catalog /Pages 2 0 R >>"))
+    objects.append((2, b"<< /Type /Pages /Kids [] /Count 0 >>"))
+    objects.append((3, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"))
+
+    page_obj_ids = []
+    next_id = 4
+    for lines in pages:
+        page_obj_id = next_id
+        content_obj_id = next_id + 1
+        next_id += 2
+        page_obj_ids.append(page_obj_id)
+        stream = _page_stream(lines)
+        page_obj = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w} {page_h}] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {content_obj_id} 0 R >>"
+        ).encode("latin-1")
+        content_obj = (
+            f"<< /Length {len(stream)} >>\nstream\n".encode("latin-1")
+            + stream
+            + b"endstream"
+        )
+        objects.append((page_obj_id, page_obj))
+        objects.append((content_obj_id, content_obj))
+
+    kids = " ".join(f"{pid} 0 R" for pid in page_obj_ids)
+    pages_obj = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_obj_ids)} >>".encode(
+        "latin-1"
+    )
+    objects[1] = (2, pages_obj)
+
+    objects_sorted = sorted(objects, key=lambda item: item[0])
+    output = bytearray()
+    output.extend(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+
+    for obj_id, obj_body in objects_sorted:
+        offsets.append(len(output))
+        output.extend(f"{obj_id} 0 obj\n".encode("latin-1"))
+        output.extend(obj_body)
+        output.extend(b"\nendobj\n")
+
+    xref_start = len(output)
+    size = max(obj_id for obj_id, _ in objects_sorted) + 1
+    output.extend(f"xref\n0 {size}\n".encode("latin-1"))
+    output.extend(b"0000000000 65535 f \n")
+    for obj_id in range(1, size):
+        offset = offsets[obj_id] if obj_id < len(offsets) else 0
+        output.extend(f"{offset:010d} 00000 n \n".encode("latin-1"))
+
+    output.extend(
+        (
+            f"trailer\n<< /Size {size} /Root 1 0 R >>\n"
+            f"startxref\n{xref_start}\n%%EOF\n"
+        ).encode("latin-1")
+    )
+    return bytes(output)
+
+
 def _validate_new_user_credentials(username: str, password: str):
     normalized_username = (username or "").strip()
     if len(normalized_username) < 3 or len(normalized_username) > 64:
@@ -1694,6 +3277,7 @@ def init_proxy_config():
         ensure_smtp_config_table(db)
         ensure_dkim_config_table(db)
         ensure_checks_config_table(db)
+        ensure_report_theme_config_table(db)
         ensure_auth_config_table(db)
         ensure_target_dns_table(db)
         ensure_targets_dns_scope_column(db)
@@ -2039,6 +3623,41 @@ def get_target_dns(target_id: UUID, user=Depends(get_current_user)):
         }
     finally:
         db.close()
+
+
+@app.get("/targets/{target_id}/report")
+def generate_target_comprehensive_report(
+    target_id: UUID, format: str = "html", user=Depends(get_current_user)
+):
+    report_format = str(format or "html").strip().lower()
+    if report_format not in ("html", "pdf"):
+        raise HTTPException(
+            status_code=400, detail="format must be one of: html, pdf"
+        )
+
+    db = SessionLocal()
+    try:
+        payload = _build_target_report_payload(db, target_id)
+        payload["theme"] = read_report_theme_config(db)
+    finally:
+        db.close()
+
+    target = payload.get("target") or {}
+    hostname = str(target.get("hostname") or "target").strip() or "target"
+    safe_host = re.sub(r"[^a-zA-Z0-9._-]+", "_", hostname).strip("_") or "target"
+    ext = "html" if report_format == "html" else "pdf"
+    filename = f"{safe_host}_{int(target.get('port') or 443)}_comprehensive_report.{ext}"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+
+    if report_format == "html":
+        html_content = _render_target_report_html(payload)
+        return HTMLResponse(content=html_content, headers=headers)
+
+    pdf_content = _build_fancy_pdf_report(payload)
+    return Response(content=pdf_content, media_type="application/pdf", headers=headers)
 
 
 @app.put("/targets/{target_id}")
@@ -3115,6 +4734,42 @@ def get_checks_config(user=Depends(get_current_admin)):
     db = SessionLocal()
     try:
         return read_checks_config(db)
+    finally:
+        db.close()
+
+
+@app.get("/config/report-theme")
+def get_report_theme_config(user=Depends(get_current_admin)):
+    db = SessionLocal()
+    try:
+        return read_report_theme_config(db)
+    finally:
+        db.close()
+
+
+@app.put("/config/report-theme")
+def update_report_theme_config(
+    payload: ReportThemeConfigUpdate, user=Depends(get_current_admin)
+):
+    primary_color = _normalize_hex_color(
+        payload.primary_color, REPORT_THEME_PRIMARY_DEFAULT
+    )
+    db = SessionLocal()
+    try:
+        ensure_report_theme_config_table(db)
+        db.execute(
+            text(
+                """
+                UPDATE report_theme_config
+                SET primary_color=:primary_color,
+                    updated_at=now()
+                WHERE id = 1
+                """
+            ),
+            {"primary_color": primary_color},
+        )
+        db.commit()
+        return read_report_theme_config(db)
     finally:
         db.close()
 

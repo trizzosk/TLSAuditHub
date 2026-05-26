@@ -1,3 +1,4 @@
 python-jose[cryptography]
 passlib[bcrypt]
 ldap3
+reportlab

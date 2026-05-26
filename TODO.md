@@ -73,6 +73,12 @@ This backlog captures candidate checks/functionality to add on top of current SS
 
 ## Reporting / Operational Enhancements
 
+- [x] **Domains / Hosts**
+  - [x] Add `Generate Report` button in Domains / Hosts section.
+  - [x] Prompt user to select report format: HTML or PDF.
+  - [x] Include all collected domain/host information in the report.
+  - [x] Keep report structure aligned with UI sections (basic data, DNS data, certificate data, spoofing check, etc.).
+
 - [ ] **Expiry and rotation intelligence**
   - [ ] Cert expiry forecasting and blast-radius mapping.
   - [ ] DKIM key age/rotation reminders.

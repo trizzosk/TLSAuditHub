@@ -8,3 +8,4 @@ python-jose
 passlib[bcrypt]
 python-multipart
 ldap3
+reportlab

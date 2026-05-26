@@ -40,6 +40,13 @@ const ui = {
   editTargetDnsChecksEnabled: document.getElementById("editTargetDnsChecksEnabled"),
   editTargetStatus: document.getElementById("editTargetStatus"),
   cancelEditTargetBtn: document.getElementById("cancelEditTargetBtn"),
+  targetReportPanel: document.getElementById("targetReportPanel"),
+  targetReportTargetLabel: document.getElementById("targetReportTargetLabel"),
+  targetReportFormat: document.getElementById("targetReportFormat"),
+  targetReportStatus: document.getElementById("targetReportStatus"),
+  generateTargetReportBtn: document.getElementById("generateTargetReportBtn"),
+  downloadTargetReportBtn: document.getElementById("downloadTargetReportBtn"),
+  closeTargetReportBtn: document.getElementById("closeTargetReportBtn"),
   dnsPanel: document.getElementById("dnsPanel"),
   targetsPageSize: document.getElementById("targetsPageSize"),
   targetsSearch: document.getElementById("targetsSearch"),
@@ -151,6 +158,11 @@ const ui = {
   checkDkimMinRsaBits: document.getElementById("checkDkimMinRsaBits"),
   checkCertExpiryDays: document.getElementById("checkCertExpiryDays"),
   checkHstsMinMaxAge: document.getElementById("checkHstsMinMaxAge"),
+  reportThemeForm: document.getElementById("reportThemeForm"),
+  reportThemePrimaryColor: document.getElementById("reportThemePrimaryColor"),
+  reportThemePrimaryHex: document.getElementById("reportThemePrimaryHex"),
+  saveReportThemeBtn: document.getElementById("saveReportThemeBtn"),
+  reloadReportThemeBtn: document.getElementById("reloadReportThemeBtn"),
   refreshUsersBtn: document.getElementById("refreshUsersBtn"),
   bulkTargetsForm: document.getElementById("bulkTargetsForm"),
   targetsCsvFile: document.getElementById("targetsCsvFile"),
@@ -241,6 +253,8 @@ let activeCertificateScanId = "";
 const selectedReportTargetIds = new Set();
 let selectedReportRowKey = "";
 let activeAdminPage = "adminUsersPage";
+let activeTargetReportTargetId = "";
+let activeTargetReportFileUrl = "";
 const MOBILE_ADMIN_NAV_QUERY = "(max-width: 980px)";
 
 function baseUrl() {
@@ -345,7 +359,7 @@ function updateAdminNavToggleState() {
 }
 
 function updateModalBodyLock() {
-  const hasOpenModal = [ui.editTargetPanel, ui.reportEmailPanel].some(
+  const hasOpenModal = [ui.editTargetPanel, ui.reportEmailPanel, ui.targetReportPanel].some(
     (panel) => panel && !panel.classList.contains("hidden")
   );
   document.body.classList.toggle("modal-open", hasOpenModal);
@@ -374,6 +388,19 @@ function setReportEmailStatus(message = "", type = "") {
     ui.reportEmailStatus.classList.add("form-hint-error");
   } else if (type === "success") {
     ui.reportEmailStatus.classList.add("form-hint-success");
+  }
+}
+
+function setTargetReportStatus(message = "", type = "") {
+  if (!ui.targetReportStatus) {
+    return;
+  }
+  ui.targetReportStatus.textContent = message || "";
+  ui.targetReportStatus.classList.remove("form-hint-error", "form-hint-success");
+  if (type === "error") {
+    ui.targetReportStatus.classList.add("form-hint-error");
+  } else if (type === "success") {
+    ui.targetReportStatus.classList.add("form-hint-success");
   }
 }
 
@@ -535,6 +562,18 @@ async function apiRequest(path, options = {}) {
       setAuthState(false, "Session expired");
     }
     throw new Error(`${response.status} ${response.statusText}: ${body}`);
+  }
+
+  if (options.responseType === "blob") {
+    return {
+      blob: await response.blob(),
+      headers: response.headers,
+      status: response.status,
+    };
+  }
+
+  if (options.responseType === "text") {
+    return await response.text();
   }
 
   const text = await response.text();
@@ -874,6 +913,44 @@ function downloadTextFile(content, filename, mimeType) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+function sanitizeFilenamePart(value, fallback = "target") {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return cleaned || fallback;
+}
+
+function parseFilenameFromDisposition(disposition) {
+  const source = String(disposition || "");
+  if (!source) {
+    return "";
+  }
+  const utfMatch = source.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch?.[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1]).trim();
+    } catch (_error) {
+      return utfMatch[1].trim();
+    }
+  }
+  const basicMatch = source.match(/filename=\"?([^\";]+)\"?/i);
+  return basicMatch?.[1]?.trim() || "";
+}
+
+function normalizeHexColor(value, fallback = "#2f5d86") {
+  const candidate = String(value || "").trim();
+  const withHash = candidate.startsWith("#") ? candidate : `#${candidate}`;
+  if (/^#[0-9a-fA-F]{6}$/.test(withHash)) {
+    return withHash.toLowerCase();
+  }
+  const fallbackWithHash = String(fallback || "#2f5d86").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(fallbackWithHash)) {
+    return fallbackWithHash.toLowerCase();
+  }
+  return "#2f5d86";
 }
 
 function exportTimestamp() {
@@ -1410,6 +1487,7 @@ function renderTargets(targets) {
           <div class="target-actions">
             <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" data-dns-scope="${dnsScope}" data-tls-checks-enabled="${tlsChecksEnabled}" data-dns-checks-enabled="${dnsChecksEnabled}" class="edit-target-btn btn btn-sm btn-outline-secondary" aria-label="Edit target ${hostname}" title="Edit target ${hostname}">Edit</button>
             <button data-target-id="${targetId}" class="run-scan-btn btn btn-sm btn-outline-primary" aria-label="Run scan for ${hostname}" title="${tlsChecksEnabled ? `Run scan for ${hostname}` : `TLS checks are disabled for ${hostname}`}" ${tlsChecksEnabled ? "" : "disabled"}>Run Scan</button>
+            <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" data-port="${target.port ?? 443}" class="generate-target-report-btn btn btn-sm btn-outline-success" aria-label="Generate report for ${hostname}" title="Generate comprehensive report for ${hostname}">Generate Report</button>
             <button data-target-id="${targetId}" data-hostname="${hostnameRaw}" class="dns-data-btn btn btn-sm btn-outline-secondary" aria-label="View DNS data for ${hostname}" title="View DNS data for ${hostname}">DNS Data</button>
             <button data-target-id="${targetId}" class="delete-target-btn btn btn-sm btn-outline-danger" aria-label="Delete target ${hostname}" title="Delete target ${hostname}">Delete</button>
           </div>
@@ -3210,6 +3288,140 @@ async function saveTargetEdit(event) {
   }
 }
 
+function closeTargetReportPanel() {
+  if (!ui.targetReportPanel) {
+    return;
+  }
+  ui.targetReportPanel.classList.add("hidden");
+  activeTargetReportTargetId = "";
+  if (activeTargetReportFileUrl) {
+    URL.revokeObjectURL(activeTargetReportFileUrl);
+    activeTargetReportFileUrl = "";
+  }
+  if (ui.downloadTargetReportBtn) {
+    ui.downloadTargetReportBtn.href = "#";
+    ui.downloadTargetReportBtn.download = "";
+    ui.downloadTargetReportBtn.classList.add("hidden");
+  }
+  if (ui.targetReportFormat) {
+    ui.targetReportFormat.value = "html";
+  }
+  if (ui.generateTargetReportBtn) {
+    ui.generateTargetReportBtn.disabled = false;
+    ui.generateTargetReportBtn.textContent = "Generate Report";
+  }
+  if (ui.targetReportTargetLabel) {
+    ui.targetReportTargetLabel.textContent = "-";
+  }
+  setTargetReportStatus("");
+  updateModalBodyLock();
+}
+
+function openTargetReportPanel(targetId, hostname, port) {
+  activeTargetReportTargetId = String(targetId || "").trim();
+  const hostLabel = String(hostname || "").trim() || "unknown-host";
+  const portLabel = Number(port) || 443;
+  if (ui.targetReportTargetLabel) {
+    ui.targetReportTargetLabel.textContent = `${hostLabel}:${portLabel}`;
+  }
+  if (ui.targetReportFormat) {
+    ui.targetReportFormat.value = "html";
+    ui.targetReportFormat.disabled = false;
+  }
+  if (ui.downloadTargetReportBtn) {
+    ui.downloadTargetReportBtn.classList.add("hidden");
+    ui.downloadTargetReportBtn.href = "#";
+    ui.downloadTargetReportBtn.download = "";
+  }
+  if (activeTargetReportFileUrl) {
+    URL.revokeObjectURL(activeTargetReportFileUrl);
+    activeTargetReportFileUrl = "";
+  }
+  setTargetReportStatus("Choose format and click Generate Report.");
+  if (ui.generateTargetReportBtn) {
+    ui.generateTargetReportBtn.disabled = false;
+    ui.generateTargetReportBtn.textContent = "Generate Report";
+  }
+  ui.targetReportPanel.classList.remove("hidden");
+  ui.targetReportFormat?.focus();
+  updateModalBodyLock();
+}
+
+async function generateTargetReportFromPanel() {
+  const targetId = String(activeTargetReportTargetId || "").trim();
+  if (!targetId) {
+    setTargetReportStatus("Cannot generate report: missing target id.", "error");
+    return;
+  }
+  const format = String(ui.targetReportFormat?.value || "html").trim().toLowerCase();
+  if (!["html", "pdf"].includes(format)) {
+    setTargetReportStatus("Invalid report format selected.", "error");
+    return;
+  }
+  const targetLabel = String(ui.targetReportTargetLabel?.textContent || "target").trim();
+
+  if (activeTargetReportFileUrl) {
+    URL.revokeObjectURL(activeTargetReportFileUrl);
+    activeTargetReportFileUrl = "";
+  }
+  if (ui.downloadTargetReportBtn) {
+    ui.downloadTargetReportBtn.classList.add("hidden");
+  }
+  if (ui.generateTargetReportBtn) {
+    ui.generateTargetReportBtn.disabled = true;
+    ui.generateTargetReportBtn.textContent = "Generating...";
+  }
+  if (ui.targetReportFormat) {
+    ui.targetReportFormat.disabled = true;
+  }
+  setTargetReportStatus(
+    `Generating ${format.toUpperCase()} report for ${targetLabel}. Please wait...`
+  );
+
+  try {
+    const response = await apiRequest(
+      `/targets/${encodeURIComponent(targetId)}/report?format=${encodeURIComponent(format)}`,
+      {
+        method: "GET",
+        responseType: "blob",
+      }
+    );
+    const blob = response?.blob;
+    if (!(blob instanceof Blob)) {
+      throw new Error("Server returned an empty file.");
+    }
+
+    const disposition = response?.headers?.get("content-disposition") || "";
+    const serverFilename = parseFilenameFromDisposition(disposition);
+    const fallbackHost = sanitizeFilenamePart(targetLabel.replace(":", "_"), "target");
+    const fallbackFilename = `${fallbackHost}_comprehensive_report.${format}`;
+    const filename = serverFilename || fallbackFilename;
+    activeTargetReportFileUrl = URL.createObjectURL(blob);
+
+    if (ui.downloadTargetReportBtn) {
+      ui.downloadTargetReportBtn.href = activeTargetReportFileUrl;
+      ui.downloadTargetReportBtn.download = filename;
+      ui.downloadTargetReportBtn.classList.remove("hidden");
+    }
+    setTargetReportStatus(
+      `Report is ready. Click Download Report to save the ${format.toUpperCase()} file.`,
+      "success"
+    );
+    log(`Comprehensive target report generated for ${targetLabel} (${format.toUpperCase()}).`);
+  } catch (error) {
+    setTargetReportStatus(`Report generation failed: ${error.message}`, "error");
+    log(`Comprehensive target report generation failed: ${error.message}`);
+  } finally {
+    if (ui.generateTargetReportBtn) {
+      ui.generateTargetReportBtn.disabled = false;
+      ui.generateTargetReportBtn.textContent = "Generate Report";
+    }
+    if (ui.targetReportFormat) {
+      ui.targetReportFormat.disabled = false;
+    }
+  }
+}
+
 async function refreshJobs() {
   try {
     pagination.jobs.pageSize = getPageSize(ui.jobsPageSize, 10);
@@ -3641,6 +3853,54 @@ async function saveChecksConfig(event) {
     log("Checks configurability saved.");
   } catch (error) {
     log(`Checks configurability save failed: ${error.message}`);
+  }
+}
+
+async function loadReportThemeConfig() {
+  try {
+    const data = await apiRequest("/config/report-theme", { method: "GET" });
+    const primary = normalizeHexColor(data.primary_color, "#2f5d86");
+    if (ui.reportThemePrimaryColor) {
+      ui.reportThemePrimaryColor.value = primary;
+    }
+    if (ui.reportThemePrimaryHex) {
+      ui.reportThemePrimaryHex.value = primary;
+    }
+    log(`Report theme loaded (primary=${primary}).`);
+  } catch (error) {
+    log(`Report theme load failed: ${error.message}`);
+  }
+}
+
+async function saveReportThemeConfig(event) {
+  event.preventDefault();
+  const primary = normalizeHexColor(
+    ui.reportThemePrimaryHex?.value || ui.reportThemePrimaryColor?.value,
+    "#2f5d86"
+  );
+  if (ui.reportThemePrimaryColor) {
+    ui.reportThemePrimaryColor.value = primary;
+  }
+  if (ui.reportThemePrimaryHex) {
+    ui.reportThemePrimaryHex.value = primary;
+  }
+  try {
+    const data = await apiRequest("/config/report-theme", {
+      method: "PUT",
+      body: JSON.stringify({
+        primary_color: primary,
+      }),
+    });
+    const saved = normalizeHexColor(data.primary_color, primary);
+    if (ui.reportThemePrimaryColor) {
+      ui.reportThemePrimaryColor.value = saved;
+    }
+    if (ui.reportThemePrimaryHex) {
+      ui.reportThemePrimaryHex.value = saved;
+    }
+    log(`Report theme saved (primary=${saved}).`);
+  } catch (error) {
+    log(`Report theme save failed: ${error.message}`);
   }
 }
 
@@ -4152,6 +4412,7 @@ async function refreshAll() {
     tasks.push(["scheduler", loadSchedulerConfig]);
     tasks.push(["smtp", loadSmtpConfig]);
     tasks.push(["checks", loadChecksConfig]);
+    tasks.push(["report-theme", loadReportThemeConfig]);
   }
   const results = await Promise.allSettled(
     tasks.map(([, fn]) => fn())
@@ -4188,6 +4449,13 @@ ui.reportEmailPanel.addEventListener("click", (event) => {
     closeReportEmailPanel();
   }
 });
+ui.generateTargetReportBtn?.addEventListener("click", generateTargetReportFromPanel);
+ui.closeTargetReportBtn?.addEventListener("click", closeTargetReportPanel);
+ui.targetReportPanel?.addEventListener("click", (event) => {
+  if (event.target === ui.targetReportPanel) {
+    closeTargetReportPanel();
+  }
+});
 ui.exportReportsCsvBtn.addEventListener("click", exportReportsCsv);
 ui.exportReportsPdfBtn.addEventListener("click", exportReportsPdf);
 ui.refreshJobsBtn.addEventListener("click", refreshJobs);
@@ -4222,6 +4490,28 @@ ui.dkimForm.addEventListener("submit", saveDkimConfig);
 ui.reloadDkimBtn.addEventListener("click", loadDkimConfig);
 ui.checksConfigForm.addEventListener("submit", saveChecksConfig);
 ui.reloadChecksConfigBtn.addEventListener("click", loadChecksConfig);
+ui.reportThemeForm?.addEventListener("submit", saveReportThemeConfig);
+ui.reloadReportThemeBtn?.addEventListener("click", loadReportThemeConfig);
+ui.reportThemePrimaryColor?.addEventListener("input", () => {
+  const normalized = normalizeHexColor(ui.reportThemePrimaryColor.value);
+  if (ui.reportThemePrimaryHex) {
+    ui.reportThemePrimaryHex.value = normalized;
+  }
+});
+ui.reportThemePrimaryHex?.addEventListener("input", () => {
+  const raw = String(ui.reportThemePrimaryHex.value || "").trim();
+  const candidate = raw.startsWith("#") ? raw : `#${raw}`;
+  if (/^#[0-9a-fA-F]{6}$/.test(candidate) && ui.reportThemePrimaryColor) {
+    ui.reportThemePrimaryColor.value = candidate.toLowerCase();
+  }
+});
+ui.reportThemePrimaryHex?.addEventListener("blur", () => {
+  const normalized = normalizeHexColor(ui.reportThemePrimaryHex.value, "#2f5d86");
+  ui.reportThemePrimaryHex.value = normalized;
+  if (ui.reportThemePrimaryColor) {
+    ui.reportThemePrimaryColor.value = normalized;
+  }
+});
 ui.smtpUseAuth.addEventListener("change", () => {
   applySmtpAuthVisibility(ui.smtpUseAuth.checked);
 });
@@ -4480,6 +4770,16 @@ ui.targetsBody.addEventListener("click", (event) => {
     return;
   }
 
+  const reportBtn = event.target.closest(".generate-target-report-btn");
+  if (reportBtn) {
+    openTargetReportPanel(
+      reportBtn.dataset.targetId,
+      reportBtn.dataset.hostname,
+      reportBtn.dataset.port
+    );
+    return;
+  }
+
   const deleteBtn = event.target.closest(".delete-target-btn");
   if (!deleteBtn) {
     return;
@@ -4528,6 +4828,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (ui.reportEmailPanel && !ui.reportEmailPanel.classList.contains("hidden")) {
     closeReportEmailPanel();
+    return;
+  }
+  if (ui.targetReportPanel && !ui.targetReportPanel.classList.contains("hidden")) {
+    closeTargetReportPanel();
     return;
   }
   if (ui.editTargetPanel && !ui.editTargetPanel.classList.contains("hidden")) {

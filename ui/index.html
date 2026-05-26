@@ -230,6 +230,29 @@
                 </div>
               </div>
             </section>
+
+            <section id="targetReportPanel" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="targetReportPanelTitle">
+              <div class="card modal-card shadow-sm">
+                <div class="card-body">
+                  <h3 id="targetReportPanelTitle" class="h5">Generate Domain/Host Report</h3>
+                  <p class="form-hint mb-2">Target: <span id="targetReportTargetLabel" class="tiny-mono">-</span></p>
+                  <div class="form-field">
+                    <label for="targetReportFormat" class="form-label">Report Format</label>
+                    <select id="targetReportFormat" class="form-select">
+                      <option value="html" selected>HTML</option>
+                      <option value="pdf">PDF</option>
+                    </select>
+                    <p class="form-hint">The report includes basic data, DNS data, certificate data, spoofing check, and latest collected scan evidence.</p>
+                  </div>
+                  <p id="targetReportStatus" class="form-hint mb-2" aria-live="polite"></p>
+                  <div class="target-actions">
+                    <button id="generateTargetReportBtn" type="button" class="btn btn-primary btn-sm">Generate Report</button>
+                    <a id="downloadTargetReportBtn" class="btn btn-outline-success btn-sm hidden" href="#" download>Download Report</a>
+                    <button id="closeTargetReportBtn" type="button" class="ghost-btn btn btn-sm">Close</button>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -1016,6 +1039,29 @@
                     </div>
                     <p class="form-hint">Severity can be overridden per report. Leave as default to use built-in severity.</p>
                     <button type="submit" id="saveChecksConfigBtn" class="btn btn-primary mt-2">Save Checks Config</button>
+                  </form>
+                </div>
+              </section>
+
+              <section class="card shadow-sm mt-3">
+                <div class="card-body">
+                  <div class="section-header">
+                    <h3 class="h5 mb-0">Report Theme</h3>
+                    <button id="reloadReportThemeBtn" class="btn btn-outline-primary btn-sm" type="button">Reload Theme</button>
+                  </div>
+                  <form id="reportThemeForm" class="proxy-form mt-3">
+                    <div class="proxy-grid">
+                      <div class="form-field">
+                        <label for="reportThemePrimaryColor" class="form-label">Primary Color</label>
+                        <input id="reportThemePrimaryColor" class="form-control form-control-color" type="color" value="#2f5d86">
+                      </div>
+                      <div class="form-field">
+                        <label for="reportThemePrimaryHex" class="form-label">Primary Hex</label>
+                        <input id="reportThemePrimaryHex" class="form-control tiny-mono" type="text" value="#2f5d86" pattern="^#?[0-9a-fA-F]{6}$" maxlength="7" placeholder="#2f5d86">
+                        <p class="form-hint">Format: <span class="tiny-mono">#RRGGBB</span>. Used as the base color for HTML/PDF report styling.</p>
+                      </div>
+                    </div>
+                    <button type="submit" id="saveReportThemeBtn" class="btn btn-primary mt-2">Save Report Theme</button>
                   </form>
                 </div>
               </section>
